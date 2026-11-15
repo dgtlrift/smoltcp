@@ -2240,7 +2240,12 @@ impl<'a> Socket<'a> {
             dup_acks @ 1..=2 => usize::from(dup_acks) * self.remote_mss,
             _ => 0,
         };
-        (self.congestion_controller.inner().window() + limited_transmit).saturating_sub(in_flight)
+        // Without a controller the window is unbounded: saturate rather than wrap.
+        self.congestion_controller
+            .inner()
+            .window()
+            .saturating_add(limited_transmit)
+            .saturating_sub(in_flight)
     }
 
     fn seq_to_transmit(&self, cx: &mut Context) -> bool {
@@ -8078,6 +8083,15 @@ mod test {
         );
         let more = flight(&mut s, 30);
         assert!(more > 0 && more <= 32, "{more}");
+    }
+
+    #[test]
+    fn test_limited_transmit_without_congestion_control() {
+        let mut s = socket_established();
+        s.set_congestion_control(CongestionControl::None);
+        s.local_rx_dup_acks = 2;
+        s.remote_last_seq = s.local_seq_no + 10;
+        assert_eq!(s.congestion_window_left(), usize::MAX - 10);
     }
 
     #[test]
