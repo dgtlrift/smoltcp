@@ -28,17 +28,22 @@ impl Controller for Reno {
     }
 
     fn on_ack(&mut self, _now: Instant, len: usize, _rtt: &RttEstimator) {
-        let len = if self.cwnd < self.ssthresh {
-            // Slow start.
-            len
+        // Only an ACK of new data opens the window (RFC 5681 section 3.1); a duplicate ACK
+        // acknowledges nothing.
+        if len == 0 {
+            return;
+        }
+        let increase = if self.cwnd < self.ssthresh {
+            // Slow start: at most one segment per ACK (RFC 5681 equation 2).
+            len.min(self.min_cwnd)
         } else {
-            self.ssthresh = self.cwnd;
-            self.min_cwnd
+            // Congestion avoidance: about one segment per round trip (RFC 5681 equation 3).
+            (self.min_cwnd * self.min_cwnd / self.cwnd).max(1)
         };
 
         self.cwnd = self
             .cwnd
-            .saturating_add(len)
+            .saturating_add(increase)
             .min(self.rwnd)
             .max(self.min_cwnd);
     }
@@ -111,6 +116,28 @@ mod test {
                 assert!(reno.window() <= remote_window);
             }
         }
+    }
+
+    #[test]
+    fn reno_congestion_avoidance() {
+        let now = Instant::from_millis(0);
+        let rtt = RttEstimator::default();
+        let mut reno = Reno::new();
+        reno.set_mss(100);
+        // A duplicate ACK halves the threshold; the window waits for the retransmission.
+        reno.on_duplicate_ack(now);
+        assert_eq!(reno.ssthresh, 200);
+        assert_eq!(reno.window(), 400);
+        // Further duplicate ACKs, which acknowledge nothing, neither open the window nor
+        // undo the threshold.
+        reno.on_ack(now, 0, &rtt);
+        assert_eq!(reno.window(), 400);
+        assert_eq!(reno.ssthresh, 200);
+        // In congestion avoidance a window's worth of ACKs opens it by about one segment.
+        for _ in 0..4 {
+            reno.on_ack(now, 100, &rtt);
+        }
+        assert!((480..=500).contains(&reno.window()), "{}", reno.window());
     }
 
     #[test]
