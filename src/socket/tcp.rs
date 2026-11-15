@@ -2404,16 +2404,21 @@ impl<'a> Socket<'a> {
 
     /// What the congestion window leaves for new data: the window less the data in flight,
     /// sent and not yet acknowledged.
+    ///
+    /// Limited Transmit (RFC 3042 section 2) lets each of the first two duplicate ACKs send
+    /// one more segment beyond the window, so a small window still gets the three duplicate
+    /// ACKs that fast retransmit needs.
     fn congestion_window_left(&self) -> usize {
         let in_flight = if self.remote_last_seq >= self.local_seq_no {
             self.remote_last_seq - self.local_seq_no
         } else {
             0
         };
-        self.congestion_controller
-            .inner()
-            .window()
-            .saturating_sub(in_flight)
+        let limited_transmit = match self.local_rx_dup_acks {
+            dup_acks @ 1..=2 => usize::from(dup_acks) * self.remote_mss,
+            _ => 0,
+        };
+        (self.congestion_controller.inner().window() + limited_transmit).saturating_sub(in_flight)
     }
 
     fn seq_to_transmit(&self, cx: &mut Context) -> bool {
@@ -8609,6 +8614,50 @@ mod test {
         );
         let more = flight(&mut s, 30);
         assert!(more > 0 && more <= 32, "{more}");
+    }
+
+    #[test]
+    #[cfg(feature = "socket-tcp-reno")]
+    fn test_limited_transmit() {
+        let mut s = socket_established_with_buffer_sizes(512, 64);
+        s.set_nagle_enabled(false);
+        s.remote_mss = 16;
+        s.remote_win_len = 512;
+        s.set_congestion_control(CongestionControl::Reno);
+        s.congestion_controller.inner_mut().set_mss(16);
+        s.send_slice(&[0x55; 512]).unwrap();
+
+        let flight = |s: &mut TestSocket, t: i64| {
+            let mut sent = 0;
+            for t in t..t + 16 {
+                s.cx.set_now(Instant::from_millis(t));
+                let _ = s.socket.dispatch(&mut s.cx, |_, (_, repr)| {
+                    sent += repr.payload.len();
+                    Ok::<_, ()>(())
+                });
+            }
+            sent
+        };
+        assert_eq!(flight(&mut s, 0), 64);
+        let dup_ack = TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            window_len: 512,
+            ..SEND_TEMPL
+        };
+        // The first ACK only sets the ACK that later ones duplicate.
+        send!(s, time 10, dup_ack);
+        assert_eq!(flight(&mut s, 10), 0);
+        // Each of the first two duplicate ACKs sends one new segment beyond the window.
+        send!(s, time 20, dup_ack);
+        assert_eq!(s.local_rx_dup_acks, 1);
+        assert_eq!(flight(&mut s, 30), 16);
+        send!(s, time 50, dup_ack);
+        assert_eq!(s.local_rx_dup_acks, 2);
+        assert_eq!(flight(&mut s, 60), 16);
+        // The window itself hasn't changed: nothing more goes out.
+        assert_eq!(s.congestion_controller.inner().window(), 64);
+        assert_eq!(flight(&mut s, 80), 0);
     }
 
     // =========================================================================================//
