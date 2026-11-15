@@ -1,6 +1,6 @@
 use crate::{socket::tcp::RttEstimator, time::Instant};
 
-use super::Controller;
+use super::{Controller, initial_window};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -14,8 +14,8 @@ pub struct Reno {
 impl Reno {
     pub fn new() -> Self {
         Reno {
-            cwnd: 1024 * 2,
-            min_cwnd: 1024 * 2,
+            cwnd: initial_window(super::super::DEFAULT_MSS),
+            min_cwnd: super::super::DEFAULT_MSS,
             ssthresh: usize::MAX,
             rwnd: 64 * 1024,
         }
@@ -53,6 +53,7 @@ impl Controller for Reno {
 
     fn set_mss(&mut self, mss: usize) {
         self.min_cwnd = mss;
+        self.cwnd = initial_window(mss).min(self.rwnd);
     }
 
     fn set_remote_window(&mut self, remote_window: usize) {

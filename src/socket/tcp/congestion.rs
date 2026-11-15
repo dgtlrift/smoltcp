@@ -10,6 +10,17 @@ pub(super) mod cubic;
 #[cfg(feature = "socket-tcp-reno")]
 pub(super) mod reno;
 
+/// The initial congestion window for a sender's maximum segment size `mss` (RFC 5681 section
+/// 3.1): four segments up to 1095 octets, three up to 2190, and two above.
+#[allow(unused)] // unused without a congestion controller
+pub(super) fn initial_window(mss: usize) -> usize {
+    match mss {
+        0..=1095 => 4 * mss,
+        1096..=2190 => 3 * mss,
+        _ => 2 * mss,
+    }
+}
+
 #[allow(unused_variables)]
 pub(super) trait Controller {
     /// Returns the number of bytes that can be sent.
@@ -28,7 +39,8 @@ pub(super) trait Controller {
 
     fn post_transmit(&mut self, now: Instant, len: usize) {}
 
-    /// Set the maximum segment size.
+    /// Set the maximum segment size, when a connection is set up; the window starts over at
+    /// [`initial_window`] for it.
     fn set_mss(&mut self, mss: usize) {}
 }
 
@@ -97,5 +109,39 @@ impl AnyController {
             #[cfg(feature = "socket-tcp-cubic")]
             AnyController::Cubic(c) => c,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_initial_window() {
+        // RFC 5681 section 3.1.
+        assert_eq!(initial_window(40), 160);
+        assert_eq!(initial_window(536), 2144);
+        assert_eq!(initial_window(1095), 4380);
+        assert_eq!(initial_window(1460), 4380);
+        assert_eq!(initial_window(2190), 6570);
+        assert_eq!(initial_window(4000), 8000);
+    }
+
+    #[test]
+    #[cfg(feature = "socket-tcp-reno")]
+    fn test_reno_starts_at_initial_window() {
+        let mut reno = reno::Reno::new();
+        assert_eq!(reno.window(), 2144);
+        reno.set_mss(40);
+        assert_eq!(reno.window(), 160);
+    }
+
+    #[test]
+    #[cfg(feature = "socket-tcp-cubic")]
+    fn test_cubic_starts_at_initial_window() {
+        let mut cubic = cubic::Cubic::new();
+        assert_eq!(cubic.window(), 2144);
+        cubic.set_mss(40);
+        assert_eq!(cubic.window(), 160);
     }
 }
