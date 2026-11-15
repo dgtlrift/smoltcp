@@ -204,25 +204,41 @@ impl<K: Eq + Copy> PacketAssemblerSet<K> {
 
     /// Get a [`PacketAssembler`] for a specific key.
     ///
-    /// If it doesn't exist, it is created, with the `expires_at` timestamp.
+    /// If it doesn't exist, it is created, with the `expires_at` timestamp. If every
+    /// assembler is in use, the one that expires first, the oldest incomplete packet, is
+    /// dropped to make way: otherwise one lost fragment would block every other fragmented
+    /// packet until it expired, up to 60 s for 6LoWPAN (RFC 4944 section 5.3).
     ///
-    /// If the assembler set is full, in which case an error is returned.
+    /// An error is returned only if the set has no assemblers at all.
     pub(crate) fn get(
         &mut self,
         key: &K,
         expires_at: Instant,
     ) -> Result<&mut PacketAssembler<K>, AssemblerFullError> {
         let mut empty_slot = None;
-        for slot in &mut self.assemblers {
+        let mut oldest = None;
+        for (i, slot) in self.assemblers.iter().enumerate() {
             if slot.key.as_ref() == Some(key) {
-                return Ok(slot);
+                return Ok(&mut self.assemblers[i]);
             }
             if slot.is_free() {
-                empty_slot = Some(slot)
+                empty_slot = Some(i);
+            } else if oldest.is_none_or(|o: usize| slot.expires_at < self.assemblers[o].expires_at)
+            {
+                oldest = Some(i);
             }
         }
 
-        let slot = empty_slot.ok_or(AssemblerFullError)?;
+        let i = match (empty_slot, oldest) {
+            (Some(i), _) => i,
+            (None, Some(i)) => {
+                net_debug!("packet assembler set full; dropping the oldest incomplete packet");
+                self.assemblers[i].reset();
+                i
+            }
+            (None, None) => return Err(AssemblerFullError),
+        };
+        let slot = &mut self.assemblers[i];
         slot.key = Some(*key);
         slot.expires_at = expires_at;
         Ok(slot)
@@ -461,11 +477,28 @@ mod tests {
 
     #[test]
     fn packet_assembler_set_full() {
+        // Every assembler holds an incomplete packet, the first the oldest.
         let mut set = PacketAssemblerSet::new();
         for i in 0..REASSEMBLY_BUFFER_COUNT {
-            set.get(&Key { id: i }, Instant::ZERO).unwrap();
+            let assr = set
+                .get(&Key { id: i }, Instant::from_millis(i as i64))
+                .unwrap();
+            assr.set_total_size(2).unwrap();
+            assr.add(&[0x00], 0).unwrap();
         }
-        assert!(set.get(&Key { id: 4 }, Instant::ZERO).is_err());
+
+        // A new packet takes the oldest's place, which starts over.
+        let new = Key {
+            id: REASSEMBLY_BUFFER_COUNT,
+        };
+        let assr = set.get(&new, Instant::from_millis(100)).unwrap();
+        assert_eq!(assr.assemble(), None);
+        assert!(
+            set.assemblers
+                .iter()
+                .all(|a| a.key.as_ref() != Some(&Key { id: 0 }))
+        );
+        assert!(set.assemblers.iter().any(|a| a.key.as_ref() == Some(&new)));
     }
 
     #[test]
