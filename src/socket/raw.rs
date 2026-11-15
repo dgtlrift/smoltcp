@@ -547,6 +547,7 @@ mod test {
             next_header: IpProtocol::Unknown(IP_PROTO),
             payload_len: 4,
             hop_limit: 64,
+            traffic_class: 0,
         });
 
         pub const PACKET_BYTES: [u8; 44] = [
@@ -942,6 +943,7 @@ mod test {
                 next_header: proto,
                 payload_len: 4,
                 hop_limit: 64,
+                traffic_class: 0,
             });
             assert!(socket.accepts(&header_repr));
         }

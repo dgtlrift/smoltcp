@@ -103,6 +103,7 @@ mod wire {
             next_header: IpProtocol::Tcp,
             payload_len: 100,
             hop_limit: 64,
+            traffic_class: 0,
         };
         let mut bytes = vec![0xa5; repr.buffer_len()];
 

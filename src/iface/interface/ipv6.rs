@@ -500,6 +500,7 @@ impl InterfaceInner {
                         next_header: IpProtocol::Icmpv6,
                         hop_limit: 0xff,
                         payload_len: advert.buffer_len(),
+                        traffic_class: 0,
                     };
                     Some(Packet::new_ipv6(ip_repr, IpPayload::Icmpv6(advert)))
                 } else {
@@ -555,6 +556,7 @@ impl InterfaceInner {
             next_header: IpProtocol::Icmpv6,
             payload_len: icmp_repr.buffer_len(),
             hop_limit: 64,
+            traffic_class: 0,
         };
         Some(Packet::new_ipv6(
             ipv6_reply_repr,
@@ -605,6 +607,7 @@ impl InterfaceInner {
                     + mld_repr.buffer_len()
                     + records_len,
                 hop_limit: 1,
+                traffic_class: 0,
             },
             IpPayload::HopByHopIcmpv6(hbh_repr, Icmpv6Repr::Mld(mld_repr)),
         ))
@@ -722,6 +725,7 @@ impl Interface {
             next_header: IpProtocol::Icmpv6,
             payload_len: rs_repr.buffer_len(),
             hop_limit: 255,
+            traffic_class: 0,
         };
         let packet = Packet::new_ipv6(ipv6_repr, IpPayload::Icmpv6(rs_repr));
         let Some(tx_token) = device.transmit(self.inner.now) else {

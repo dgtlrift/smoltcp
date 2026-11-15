@@ -54,6 +54,7 @@ fn any_ip(#[case] medium: Medium) {
                 hop_limit: 64,
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 8,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::EchoRequest {
                 ident: 0,
@@ -162,6 +163,7 @@ fn hop_by_hop_skip_with_icmp(#[case] medium: Medium) {
             hop_limit: 64,
             next_header: IpProtocol::Icmpv6,
             payload_len: 19,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::EchoReply {
             ident: 42,
@@ -243,6 +245,7 @@ fn hop_by_hop_discard_param_problem(#[case] medium: Medium) {
             next_header: IpProtocol::Icmpv6,
             payload_len: 75,
             hop_limit: 64,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::ParamProblem {
             reason: Icmpv6ParamProblem::UnrecognizedOption,
@@ -253,6 +256,7 @@ fn hop_by_hop_discard_param_problem(#[case] medium: Medium) {
                 next_header: IpProtocol::HopByHop,
                 payload_len: 27,
                 hop_limit: 64,
+                traffic_class: 0,
             },
             data: &[
                 0x3a, 0x0, 0xC0, 0x0, 0x40, 0x0, 0x1, 0x0, 0x80, 0x0, 0x2c, 0x88, 0x0, 0x2a, 0x1,
@@ -301,6 +305,7 @@ fn hop_by_hop_discard_with_multicast(#[case] medium: Medium) {
             next_header: IpProtocol::Icmpv6,
             payload_len: 75,
             hop_limit: 64,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::ParamProblem {
             reason: Icmpv6ParamProblem::UnrecognizedOption,
@@ -311,6 +316,7 @@ fn hop_by_hop_discard_with_multicast(#[case] medium: Medium) {
                 next_header: IpProtocol::HopByHop,
                 payload_len: 27,
                 hop_limit: 64,
+                traffic_class: 0,
             },
             data: &[
                 0x3a, 0x0, 0x80, 0x0, 0x40, 0x0, 0x1, 0x0, 0x80, 0x0, 0x2c, 0x88, 0x0, 0x2a, 0x1,
@@ -355,6 +361,7 @@ fn imcp_empty_echo_request(#[case] medium: Medium) {
                 hop_limit: 64,
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 8,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::EchoRequest {
                 ident: 0,
@@ -371,6 +378,7 @@ fn imcp_empty_echo_request(#[case] medium: Medium) {
             hop_limit: 64,
             next_header: IpProtocol::Icmpv6,
             payload_len: 8,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::EchoReply {
             ident: 0,
@@ -416,6 +424,7 @@ fn icmp_echo_request(#[case] medium: Medium) {
                 hop_limit: 64,
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 19,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::EchoRequest {
                 ident: 42,
@@ -432,6 +441,7 @@ fn icmp_echo_request(#[case] medium: Medium) {
             hop_limit: 64,
             next_header: IpProtocol::Icmpv6,
             payload_len: 19,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::EchoReply {
             ident: 42,
@@ -477,6 +487,7 @@ fn icmp_echo_reply_as_input(#[case] medium: Medium) {
                 hop_limit: 64,
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 19,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::EchoReply {
                 ident: 0,
@@ -522,6 +533,7 @@ fn unknown_proto_with_multicast_dst_address(#[case] medium: Medium) {
             hop_limit: 64,
             next_header: IpProtocol::Icmpv6,
             payload_len: 48,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::ParamProblem {
             reason: Icmpv6ParamProblem::UnrecognizedNxtHdr,
@@ -532,6 +544,7 @@ fn unknown_proto_with_multicast_dst_address(#[case] medium: Medium) {
                 hop_limit: 64,
                 next_header: IpProtocol::Unknown(0x0c),
                 payload_len: 0,
+                traffic_class: 0,
             },
             data: &[],
         }),
@@ -572,6 +585,7 @@ fn unknown_proto(#[case] medium: Medium) {
             hop_limit: 64,
             next_header: IpProtocol::Icmpv6,
             payload_len: 48,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::ParamProblem {
             reason: Icmpv6ParamProblem::UnrecognizedNxtHdr,
@@ -582,6 +596,7 @@ fn unknown_proto(#[case] medium: Medium) {
                 hop_limit: 64,
                 next_header: IpProtocol::Unknown(0x0c),
                 payload_len: 0,
+                traffic_class: 0,
             },
             data: &[],
         }),
@@ -621,6 +636,7 @@ fn ndisc_neighbor_advertisement_ethernet(#[case] medium: Medium) {
                 hop_limit: 255,
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 32,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
                 flags: NdiscNeighborFlags::SOLICITED,
@@ -676,6 +692,7 @@ fn ndisc_neighbor_advertisement_ethernet_multicast_addr(#[case] medium: Medium) 
                 hop_limit: 255,
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 32,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
                 flags: NdiscNeighborFlags::SOLICITED,
@@ -731,6 +748,7 @@ fn ndisc_neighbor_advertisement_ieee802154(#[case] medium: Medium) {
                 hop_limit: 255,
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 40,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
                 flags: NdiscNeighborFlags::SOLICITED,
@@ -788,6 +806,7 @@ fn test_handle_valid_ndisc_request(#[case] medium: Medium) {
         next_header: IpProtocol::Icmpv6,
         hop_limit: 0xff,
         payload_len: solicit.buffer_len(),
+        traffic_class: 0,
     });
 
     let mut frame = EthernetFrame::new_unchecked(&mut eth_bytes);
@@ -814,6 +833,7 @@ fn test_handle_valid_ndisc_request(#[case] medium: Medium) {
         next_header: IpProtocol::Icmpv6,
         hop_limit: 0xff,
         payload_len: icmpv6_expected.buffer_len(),
+        traffic_class: 0,
     };
 
     // Ensure an Neighbor Solicitation triggers a Neighbor Advertisement
@@ -965,6 +985,7 @@ fn test_router_advertisement(#[case] medium: Medium) {
         next_header: IpProtocol::Icmpv6,
         hop_limit: 255,
         payload_len: advertisement.buffer_len(),
+        traffic_class: 0,
     });
     let mut frame = EthernetFrame::new_unchecked(&mut eth_bytes);
     frame.set_dst_addr(local_hw_addr);
@@ -1170,6 +1191,7 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
         next_header: IpProtocol::Udp,
         hop_limit: 64,
         payload_len: udp_repr.header_len() + MAX_PAYLOAD_LEN,
+        traffic_class: 0,
     };
     let payload = packet.into_inner();
 
@@ -1185,6 +1207,7 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
         next_header: IpProtocol::Icmpv6,
         hop_limit: 64,
         payload_len: expected_icmp_repr.buffer_len(),
+        traffic_class: 0,
     };
 
     assert_eq!(
@@ -1722,6 +1745,7 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
             next_header: IpProtocol::Icmpv6,
             hop_limit: 1,
             payload_len: query.buffer_len(),
+            traffic_class: 0,
         });
 
         let mut frame = EthernetFrame::new_unchecked(&mut eth_bytes);

@@ -1164,6 +1164,7 @@ impl InterfaceInner {
                         next_header: IpProtocol::Icmpv6,
                         payload_len: solicit.buffer_len(),
                         hop_limit: 0xff,
+                        traffic_class: 0,
                     },
                     IpPayload::Icmpv6(solicit),
                 );

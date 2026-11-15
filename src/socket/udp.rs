@@ -683,6 +683,8 @@ mod test {
         next_header: IpProtocol::Udp,
         payload_len: 8 + 6,
         hop_limit: 64,
+        #[cfg(not(feature = "proto-ipv4"))]
+        traffic_class: 0,
     });
 
     pub const REMOTE_IP_REPR: IpRepr = IpReprIpvX(IpvXRepr {
@@ -691,6 +693,8 @@ mod test {
         next_header: IpProtocol::Udp,
         payload_len: 8 + 6,
         hop_limit: 64,
+        #[cfg(not(feature = "proto-ipv4"))]
+        traffic_class: 0,
     });
 
     pub const BAD_IP_REPR: IpRepr = IpReprIpvX(IpvXRepr {
@@ -699,6 +703,8 @@ mod test {
         next_header: IpProtocol::Udp,
         payload_len: 8 + 6,
         hop_limit: 64,
+        #[cfg(not(feature = "proto-ipv4"))]
+        traffic_class: 0,
     });
 
     const LOCAL_UDP_REPR: UdpRepr = UdpRepr {
@@ -989,6 +995,8 @@ mod test {
                         next_header: IpProtocol::Udp,
                         payload_len: 8 + 6,
                         hop_limit: 0x2a,
+                        #[cfg(not(feature = "proto-ipv4"))]
+                        traffic_class: 0,
                     })
                 );
                 Ok::<_, ()>(())

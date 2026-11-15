@@ -178,7 +178,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
         match self.tf_field() {
             0b00..=0b10 => {
                 let start = self.ip_fields_start() as usize;
-                Some(self.buffer.as_ref()[start..][0] & 0b1100_0000)
+                Some(self.buffer.as_ref()[start..][0] >> 6)
             }
             0b11 => None,
             _ => unreachable!(),
@@ -481,6 +481,45 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         raw[idx..idx + value.len()].copy_from_slice(value);
     }
 
+    /// Set the Traffic Class and Flow Label, inline in the form their presence calls for
+    /// (RFC 6282 section 3.1.1). The Flow Label is 16 bits here, so its upper 4 are 0.
+    ///
+    /// **NOTE**: `idx` is the offset at which the inline fields need to be written to.
+    fn set_traffic_flow(
+        &mut self,
+        ecn: Option<u8>,
+        dscp: Option<u8>,
+        flow_label: Option<u16>,
+        mut idx: usize,
+    ) -> usize {
+        match (ecn, dscp, flow_label) {
+            (Some(ecn), Some(dscp), Some(flow_label)) => {
+                self.set_tf_field(0b00);
+                let flow_label = flow_label.to_be_bytes();
+                self.set_field(
+                    idx,
+                    &[(ecn << 6) | (dscp & 0x3f), 0, flow_label[0], flow_label[1]],
+                );
+                idx += 4;
+            }
+            (Some(ecn), None, Some(flow_label)) => {
+                self.set_tf_field(0b01);
+                let flow_label = flow_label.to_be_bytes();
+                self.set_field(idx, &[ecn << 6, flow_label[0], flow_label[1]]);
+                idx += 3;
+            }
+            (Some(ecn), Some(dscp), None) => {
+                self.set_tf_field(0b10);
+                self.set_field(idx, &[(ecn << 6) | (dscp & 0x3f)]);
+                idx += 1;
+            }
+            (None, None, None) => self.set_tf_field(0b11),
+            _ => unreachable!(),
+        }
+
+        idx
+    }
+
     /// Set the Next Header.
     ///
     /// **NOTE**: `idx` is the offset at which the Next Header needs to be written to.
@@ -687,8 +726,11 @@ pub struct Repr {
     pub next_header: NextHeader,
     pub hop_limit: u8,
     // TODO(thvdveld): refactor the following fields into something else
+    /// The 2-bit ECN field, `None` when elided.
     pub ecn: Option<u8>,
+    /// The 6-bit DSCP, `None` when elided.
     pub dscp: Option<u8>,
+    /// The Flow Label, `None` when elided.
     pub flow_label: Option<u16>,
 }
 
@@ -854,9 +896,7 @@ impl Repr {
 
         packet.set_dispatch_field();
 
-        // FIXME(thvdveld): we don't set anything from the traffic flow.
-        packet.set_tf_field(0b11);
-
+        let idx = packet.set_traffic_flow(self.ecn, self.dscp, self.flow_label, idx);
         let idx = packet.set_next_header(self.next_header, idx);
         let idx = packet.set_hop_limit(self.hop_limit, idx);
         let idx = packet.set_src_address(self.src_addr, self.ll_src_addr, idx);
@@ -944,5 +984,56 @@ mod test {
                 AddressMode::FullyElided
             )))
         );
+    }
+
+    fn repr_with_traffic_flow(ecn: Option<u8>, dscp: Option<u8>, flow_label: Option<u16>) -> Repr {
+        Repr {
+            src_addr: ipv6::Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 1),
+            ll_src_addr: None,
+            dst_addr: ipv6::Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 2),
+            ll_dst_addr: None,
+            next_header: NextHeader::Uncompressed(IpProtocol::Udp),
+            hop_limit: 64,
+            ecn,
+            dscp,
+            flow_label,
+        }
+    }
+
+    #[test]
+    fn traffic_flow_round_trip() {
+        // EF (DSCP 46) with ECT(0), CE alone with a flow label, all three, and none.
+        for (ecn, dscp, flow_label, tf, inline) in [
+            (Some(0b10), Some(46), None, 0b10, &[0xae][..]),
+            (
+                Some(0b11),
+                None,
+                Some(0x1234),
+                0b01,
+                &[0xc0, 0x12, 0x34][..],
+            ),
+            (
+                Some(0b01),
+                Some(10),
+                Some(0xbeef),
+                0b00,
+                &[0x4a, 0x00, 0xbe, 0xef][..],
+            ),
+            (None, None, None, 0b11, &[][..]),
+        ] {
+            let repr = repr_with_traffic_flow(ecn, dscp, flow_label);
+            let mut bytes = [0u8; 64];
+            let len = repr.buffer_len();
+            let mut packet = Packet::new_unchecked(&mut bytes[..len]);
+            repr.emit(&mut packet);
+
+            let packet = Packet::new_unchecked(&bytes[..len]);
+            assert_eq!(packet.tf_field(), tf);
+            assert_eq!(&bytes[2..2 + inline.len()], inline);
+            assert_eq!(packet.ecn_field(), ecn);
+            assert_eq!(packet.dscp_field(), dscp);
+            assert_eq!(packet.flow_label_field(), flow_label);
+            assert_eq!(Repr::parse(&packet, None, None, &[]), Ok(repr));
+        }
     }
 }

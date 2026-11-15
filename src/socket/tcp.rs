@@ -2812,6 +2812,8 @@ mod test {
         next_header: IpProtocol::Tcp,
         payload_len: 20,
         hop_limit: 64,
+        #[cfg(not(feature = "proto-ipv4"))]
+        traffic_class: 0,
     });
     const SEND_TEMPL: TcpRepr<'static> = TcpRepr {
         src_port: REMOTE_PORT,
@@ -2833,6 +2835,8 @@ mod test {
         next_header: IpProtocol::Tcp,
         payload_len: 20,
         hop_limit: 64,
+        #[cfg(not(feature = "proto-ipv4"))]
+        traffic_class: 0,
     });
     const RECV_TEMPL: TcpRepr<'static> = TcpRepr {
         src_port: LOCAL_PORT,
@@ -2885,6 +2889,8 @@ mod test {
             next_header: IpProtocol::Tcp,
             payload_len: repr.buffer_len(),
             hop_limit: 64,
+            #[cfg(not(feature = "proto-ipv4"))]
+            traffic_class: 0,
         });
         net_trace!("send: {}", repr);
 
@@ -8652,6 +8658,8 @@ mod test {
             next_header: IpProtocol::Tcp,
             payload_len: tcp_repr.buffer_len(),
             hop_limit: 64,
+            #[cfg(not(feature = "proto-ipv4"))]
+            traffic_class: 0,
         });
         assert!(s.socket.accepts(&mut s.cx, &ip_repr, &tcp_repr));
 
@@ -8661,6 +8669,8 @@ mod test {
             next_header: IpProtocol::Tcp,
             payload_len: tcp_repr.buffer_len(),
             hop_limit: 64,
+            #[cfg(not(feature = "proto-ipv4"))]
+            traffic_class: 0,
         });
         assert!(!s.socket.accepts(&mut s.cx, &ip_repr_wrong_src, &tcp_repr));
 
@@ -8670,6 +8680,8 @@ mod test {
             next_header: IpProtocol::Tcp,
             payload_len: tcp_repr.buffer_len(),
             hop_limit: 64,
+            #[cfg(not(feature = "proto-ipv4"))]
+            traffic_class: 0,
         });
         assert!(!s.socket.accepts(&mut s.cx, &ip_repr_wrong_dst, &tcp_repr));
     }

@@ -622,6 +622,7 @@ impl Repr {
                 next_header,
                 payload_len,
                 hop_limit,
+                traffic_class: 0,
             }),
             #[allow(unreachable_patterns)]
             _ => panic!("IP version mismatch: src={src_addr:?} dst={dst_addr:?}"),
@@ -713,6 +714,27 @@ impl Repr {
             Repr::Ipv4(Ipv4Repr { payload_len, .. }) => *payload_len = length,
             #[cfg(feature = "proto-ipv6")]
             Repr::Ipv6(Ipv6Repr { payload_len, .. }) => *payload_len = length,
+        }
+    }
+
+    /// Return the IPv6 Traffic Class, or 0 for IPv4, whose header this crate always emits
+    /// with a zero DSCP and ECN field.
+    pub const fn traffic_class(&self) -> u8 {
+        match *self {
+            #[cfg(feature = "proto-ipv4")]
+            Repr::Ipv4(_) => 0,
+            #[cfg(feature = "proto-ipv6")]
+            Repr::Ipv6(Ipv6Repr { traffic_class, .. }) => traffic_class,
+        }
+    }
+
+    /// Set the IPv6 Traffic Class; an IPv4 header is left unchanged.
+    pub fn set_traffic_class(&mut self, traffic_class: u8) {
+        match self {
+            #[cfg(feature = "proto-ipv4")]
+            Repr::Ipv4(_) => {}
+            #[cfg(feature = "proto-ipv6")]
+            Repr::Ipv6(repr) => repr.traffic_class = traffic_class,
         }
     }
 
@@ -1111,6 +1133,7 @@ pub(crate) mod test {
             next_header: Protocol::Udp,
             payload_len: 12,
             hop_limit: 64,
+            traffic_class: 0,
         };
 
         let packet = Packet::new_unchecked(&ipv6_packet_bytes[..]);

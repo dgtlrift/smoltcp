@@ -671,6 +671,7 @@ impl<'a> Socket<'a> {
                         next_header: IpProtocol::Icmpv6,
                         payload_len: repr.buffer_len(),
                         hop_limit,
+                        traffic_class: 0,
                     });
                     emit(cx, (ip_repr, IcmpRepr::Ipv6(repr)))
                 }
@@ -1011,6 +1012,7 @@ mod test_ipv6 {
         next_header: IpProtocol::Icmpv6,
         payload_len: 24,
         hop_limit: 0x40,
+        traffic_class: 0,
     };
 
     static REMOTE_IPV6_REPR: Ipv6Repr = Ipv6Repr {
@@ -1019,6 +1021,7 @@ mod test_ipv6 {
         next_header: IpProtocol::Icmpv6,
         payload_len: 24,
         hop_limit: 0x40,
+        traffic_class: 0,
     };
 
     #[test]
@@ -1117,6 +1120,7 @@ mod test_ipv6 {
                         next_header: IpProtocol::Icmpv6,
                         payload_len: ECHOV6_REPR.buffer_len(),
                         hop_limit: 0x2a,
+                        traffic_class: 0,
                     })
                 );
                 Ok::<_, ()>(())
@@ -1245,6 +1249,7 @@ mod test_ipv6 {
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 12,
                 hop_limit: 0x40,
+                traffic_class: 0,
             },
             data,
         };
@@ -1254,6 +1259,7 @@ mod test_ipv6 {
             next_header: IpProtocol::Icmpv6,
             payload_len: icmp_repr.buffer_len(),
             hop_limit: 0x40,
+            traffic_class: 0,
         };
 
         assert!(!socket.can_recv());

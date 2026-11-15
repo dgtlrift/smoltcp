@@ -644,6 +644,7 @@ impl<'a> Repr<'a> {
                 next_header: ip_packet.next_header(),
                 payload_len: ip_packet.payload_len().into(),
                 hop_limit: ip_packet.hop_limit(),
+                traffic_class: 0,
             };
             Ok((payload, repr))
         }
@@ -891,6 +892,7 @@ mod test {
                 next_header: IpProtocol::Udp,
                 payload_len: 12,
                 hop_limit: 0x40,
+                traffic_class: 0,
             },
             data: &PKT_TOO_BIG_UDP_PAYLOAD,
         }
@@ -1014,6 +1016,7 @@ mod test {
                 next_header: IpProtocol::Tcp,
                 hop_limit: 64,
                 payload_len: 1280,
+                traffic_class: 0,
             },
             data: &vec![0; 9999],
         };
@@ -1028,6 +1031,7 @@ mod test {
             next_header: IpProtocol::Tcp,
             hop_limit: 64,
             payload_len: IPV6_MIN_MTU - IPV6_HEADER_LEN,
+            traffic_class: 0,
         };
         let mut ip_packet = Ipv6Packet::new_unchecked(vec![0; IPV6_MIN_MTU]);
         ip_packet_repr.emit(&mut ip_packet);

@@ -45,6 +45,7 @@ fn icmp_echo_request(#[case] medium: Medium) {
             hop_limit: 64,
             next_header: IpProtocol::Icmpv6,
             payload_len: 64,
+            traffic_class: 0,
         },
         IpPayload::Icmpv6(Icmpv6Repr::EchoReply {
             ident: 4,
@@ -205,6 +206,7 @@ fn test_echo_request_sixlowpan_128_bytes() {
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 136,
                 hop_limit: 64,
+                traffic_class: 0,
             },
             IpPayload::Icmpv6(Icmpv6Repr::EchoReply {
                 ident: 39,
@@ -383,6 +385,7 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
                 next_header: IpProtocol::Udp,
                 payload_len: udp_data.len(),
                 hop_limit: 64,
+                traffic_class: 0,
             },
             IpPayload::Udp(
                 UdpRepr {

@@ -102,6 +102,7 @@ fn test_handle_udp_broadcast(#[case] medium: Medium) {
         next_header: IpProtocol::Udp,
         payload_len: udp_repr.header_len() + UDP_PAYLOAD.len(),
         hop_limit: 0x40,
+        traffic_class: 0,
     });
     #[cfg(all(not(feature = "proto-ipv6"), feature = "proto-ipv4"))]
     let ip_repr = IpRepr::Ipv4(Ipv4Repr {
@@ -194,6 +195,7 @@ pub fn tcp_not_accepted() {
                 next_header: IpProtocol::Tcp,
                 payload_len: tcp.buffer_len(),
                 hop_limit: 64,
+                traffic_class: 0,
             }),
             &tcp_bytes,
         ),
@@ -204,6 +206,7 @@ pub fn tcp_not_accepted() {
                 next_header: IpProtocol::Tcp,
                 payload_len: tcp.buffer_len(),
                 hop_limit: 64,
+                traffic_class: 0,
             },
             IpPayload::Tcp(TcpRepr {
                 src_port: 4243,
@@ -239,6 +242,7 @@ pub fn tcp_not_accepted() {
                 next_header: IpProtocol::Tcp,
                 payload_len: tcp.buffer_len(),
                 hop_limit: 64,
+                traffic_class: 0,
             }),
             &tcp_bytes,
         ),

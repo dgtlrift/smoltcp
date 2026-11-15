@@ -599,6 +599,9 @@ pub struct Repr {
     pub payload_len: usize,
     /// The 8-bit hop limit field.
     pub hop_limit: u8,
+    /// The 8-bit Traffic Class field: the DSCP in its upper six bits and the ECN field in
+    /// its lower two (RFC 8200 section 7, RFC 3168 section 5).
+    pub traffic_class: u8,
 }
 
 impl Repr {
@@ -615,6 +618,7 @@ impl Repr {
             next_header: packet.next_header(),
             payload_len: packet.payload_len() as usize,
             hop_limit: packet.hop_limit(),
+            traffic_class: packet.traffic_class(),
         })
     }
 
@@ -629,7 +633,7 @@ impl Repr {
         // Make no assumptions about the original state of the packet buffer.
         // Make sure to set every byte.
         packet.set_version(6);
-        packet.set_traffic_class(0);
+        packet.set_traffic_class(self.traffic_class);
         packet.set_flow_label(0);
         packet.set_payload_len(self.payload_len as u16);
         packet.set_hop_limit(self.hop_limit);
@@ -1058,7 +1062,24 @@ pub(crate) mod test {
             next_header: Protocol::Udp,
             payload_len: 12,
             hop_limit: 64,
+            traffic_class: 0,
         }
+    }
+
+    #[test]
+    fn test_repr_traffic_class_round_trip() {
+        // EF (DSCP 46) and ECT(0).
+        let repr = Repr {
+            traffic_class: 0xba,
+            ..packet_repr()
+        };
+        let mut bytes = [0xffu8; 52];
+        let mut packet = Packet::new_unchecked(&mut bytes[..]);
+        repr.emit(&mut packet);
+        assert_eq!(packet.traffic_class(), 0xba);
+        assert_eq!(packet.flow_label(), 0);
+        let packet = Packet::new_unchecked(&bytes[..]);
+        assert_eq!(Repr::parse(&packet), Ok(repr));
     }
 
     #[test]

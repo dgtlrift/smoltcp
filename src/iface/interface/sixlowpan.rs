@@ -284,6 +284,7 @@ impl InterfaceInner {
             next_header: decompress_next_header(iphc_repr.next_header, iphc.payload())?,
             payload_len: total_len.unwrap_or(payload_len) - 40,
             hop_limit: iphc_repr.hop_limit,
+            traffic_class: (iphc_repr.dscp.unwrap_or(0) << 2) | iphc_repr.ecn.unwrap_or(0),
         };
         ipv6_repr.emit(&mut ipv6_header);
 
@@ -442,6 +443,7 @@ impl InterfaceInner {
             next_header
         };
 
+        let (ecn, dscp) = traffic_class_fields(packet.header.traffic_class);
         let iphc_repr = SixlowpanIphcRepr {
             src_addr: packet.header.src_addr,
             ll_src_addr: ieee_repr.src_addr,
@@ -449,8 +451,8 @@ impl InterfaceInner {
             ll_dst_addr: ieee_repr.dst_addr,
             next_header,
             hop_limit: packet.header.hop_limit,
-            ecn: None,
-            dscp: None,
+            ecn,
+            dscp,
             flow_label: None,
         };
 
@@ -577,6 +579,7 @@ impl InterfaceInner {
             next_header
         };
 
+        let (ecn, dscp) = traffic_class_fields(packet.header.traffic_class);
         let iphc = SixlowpanIphcRepr {
             src_addr: packet.header.src_addr,
             ll_src_addr: ieee_repr.src_addr,
@@ -584,8 +587,8 @@ impl InterfaceInner {
             ll_dst_addr: ieee_repr.dst_addr,
             next_header,
             hop_limit: packet.header.hop_limit,
-            ecn: None,
-            dscp: None,
+            ecn,
+            dscp,
             flow_label: None,
         };
 
@@ -686,6 +689,16 @@ impl InterfaceInner {
                 frag.sixlowpan.datagram_offset += frag_size;
             },
         );
+    }
+}
+
+/// The IPHC ECN and DSCP fields for an IPv6 Traffic Class: elided when it is 0, inline
+/// otherwise (RFC 6282 section 3.1.1). The Flow Label is always elided.
+fn traffic_class_fields(traffic_class: u8) -> (Option<u8>, Option<u8>) {
+    if traffic_class == 0 {
+        (None, None)
+    } else {
+        (Some(traffic_class & 0b11), Some(traffic_class >> 2))
     }
 }
 
@@ -849,6 +862,7 @@ mod tests {
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 66,
                 hop_limit: 64,
+                traffic_class: 0,
             },
             #[cfg(feature = "proto-ipv6-hbh")]
             hop_by_hop: None,
@@ -928,6 +942,7 @@ mod tests {
                 next_header: IpProtocol::Icmpv6,
                 payload_len: 66,
                 hop_limit: 64,
+                traffic_class: 0,
             },
             #[cfg(feature = "proto-ipv6-hbh")]
             hop_by_hop: Some(Ipv6HopByHopRepr {
@@ -972,5 +987,72 @@ mod tests {
         ];
 
         assert_eq!(&buffer[..total_size], &result);
+    }
+
+    #[test]
+    fn test_sixlowpan_traffic_class_round_trip() {
+        let ieee_repr = Ieee802154Repr {
+            frame_type: Ieee802154FrameType::Data,
+            security_enabled: false,
+            frame_pending: false,
+            ack_request: true,
+            sequence_number: Some(69),
+            pan_id_compression: true,
+            frame_version: Ieee802154FrameVersion::Ieee802154_2006,
+            dst_pan_id: Some(Ieee802154Pan(43981)),
+            dst_addr: Some(Ieee802154Address::Extended([0, 1, 0, 1, 0, 1, 0, 1])),
+            src_pan_id: None,
+            src_addr: Some(Ieee802154Address::Extended([0, 3, 0, 3, 0, 3, 0, 3])),
+        };
+        let data = [1, 2, 3, 4];
+
+        for (traffic_class, inline) in [(0xba, &[0xae][..]), (0x00, &[][..])] {
+            // EF (DSCP 46) with ECT(0) is carried inline as ECN then DSCP; 0 is elided.
+            let mut ip_packet = PacketV6 {
+                header: Ipv6Repr {
+                    src_addr: Ipv6Address::new(0xfe80, 0, 0, 0, 0x0203, 0x0003, 0x0003, 0x0003),
+                    dst_addr: Ipv6Address::new(0xfe80, 0, 0, 0, 0x0201, 0x0001, 0x0001, 0x0001),
+                    next_header: IpProtocol::Udp,
+                    payload_len: 8 + data.len(),
+                    hop_limit: 64,
+                    traffic_class,
+                },
+                #[cfg(feature = "proto-ipv6-hbh")]
+                hop_by_hop: None,
+                #[cfg(feature = "proto-ipv6-fragmentation")]
+                fragment: None,
+                #[cfg(feature = "proto-ipv6-routing")]
+                routing: None,
+                payload: IpPayload::Udp(
+                    UdpRepr {
+                        src_port: 7000,
+                        dst_port: 7000,
+                    },
+                    &data,
+                ),
+            };
+
+            let (total_size, _, _) =
+                InterfaceInner::compressed_packet_size(&mut ip_packet, &ieee_repr);
+            let mut buffer = vec![0u8; total_size];
+            InterfaceInner::ipv6_to_sixlowpan(
+                &ChecksumCapabilities::default(),
+                ip_packet,
+                &ieee_repr,
+                &mut buffer[..total_size],
+            );
+            // TF is bits 3 and 4 of the IPHC header's first octet.
+            let tf = (buffer[0] >> 3) & 0b11;
+            assert_eq!(tf, if inline.is_empty() { 0b11 } else { 0b10 });
+            assert_eq!(&buffer[2..2 + inline.len()], inline);
+
+            let mut out = [0u8; 128];
+            let len =
+                InterfaceInner::sixlowpan_to_ipv6(&[], &ieee_repr, &buffer[..], None, &mut out)
+                    .unwrap();
+            let packet = Ipv6Packet::new_checked(&out[..len]).unwrap();
+            assert_eq!(packet.traffic_class(), traffic_class);
+            assert_eq!(packet.flow_label(), 0);
+        }
     }
 }
