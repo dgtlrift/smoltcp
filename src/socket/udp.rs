@@ -123,6 +123,10 @@ pub struct Socket<'a> {
     tx_buffer: PacketBuffer<'a>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     hop_limit: Option<u8>,
+    /// The DSCP of outgoing IPv6 packets.
+    dscp: u8,
+    /// Whether outgoing IPv6 packets are ECN-capable (ECT(0)).
+    ecn_capable: bool,
     #[cfg(feature = "async")]
     rx_waker: WakerRegistration,
     #[cfg(feature = "async")]
@@ -137,6 +141,8 @@ impl<'a> Socket<'a> {
             rx_buffer,
             tx_buffer,
             hop_limit: None,
+            dscp: 0,
+            ecn_capable: false,
             #[cfg(feature = "async")]
             rx_waker: WakerRegistration::new(),
             #[cfg(feature = "async")]
@@ -210,6 +216,51 @@ impl<'a> Socket<'a> {
         }
 
         self.hop_limit = hop_limit
+    }
+
+    /// Return the DSCP this socket's outgoing IPv6 packets carry in their Traffic Class.
+    ///
+    /// See also the [set_dscp](#method.set_dscp) method.
+    pub fn dscp(&self) -> u8 {
+        self.dscp
+    }
+
+    /// Set the DSCP this socket's outgoing IPv6 packets carry in the upper six bits of their
+    /// Traffic Class (RFC 2474 section 3). A socket without one set uses 0, default forwarding.
+    /// IPv4 packets are sent with a DSCP of 0.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if `dscp` is above 63, which doesn't fit the six-bit field.
+    pub fn set_dscp(&mut self, dscp: u8) {
+        if dscp > 0x3f {
+            panic!("a DSCP must fit six bits")
+        }
+
+        self.dscp = dscp
+    }
+
+    /// Return whether this socket's outgoing IPv6 packets are ECN-capable.
+    ///
+    /// See also the [set_ecn_capable](#method.set_ecn_capable) method.
+    pub fn ecn_capable(&self) -> bool {
+        self.ecn_capable
+    }
+
+    /// Set whether this socket's outgoing IPv6 packets are ECN-capable, sent with ECT(0) in the
+    /// ECN field of their Traffic Class (RFC 3168 section 5), so that a congested router can
+    /// mark them CE instead of dropping them. Off unless set. IPv4 packets are sent not
+    /// ECN-capable.
+    ///
+    /// An application that sets this should react to the CE marks its peer sees.
+    pub fn set_ecn_capable(&mut self, ecn_capable: bool) {
+        self.ecn_capable = ecn_capable
+    }
+
+    /// The Traffic Class of this socket's outgoing IPv6 packets.
+    fn traffic_class(&self) -> u8 {
+        // ECT(0) is 0b10 (RFC 3168 section 5).
+        (self.dscp << 2) | if self.ecn_capable { 0b10 } else { 0 }
     }
 
     /// Bind the socket to the given endpoint.
@@ -541,6 +592,7 @@ impl<'a> Socket<'a> {
     {
         let endpoint = self.endpoint;
         let hop_limit = self.hop_limit.unwrap_or(64);
+        let traffic_class = self.traffic_class();
 
         let res = self.tx_buffer.dequeue_with(|packet_meta, payload_buf| {
             let src_addr = if let Some(s) = packet_meta.local_address {
@@ -573,13 +625,14 @@ impl<'a> Socket<'a> {
                 src_port: endpoint.port,
                 dst_port: packet_meta.endpoint.port,
             };
-            let ip_repr = IpRepr::new(
+            let mut ip_repr = IpRepr::new(
                 src_addr,
                 packet_meta.endpoint.addr,
                 IpProtocol::Udp,
                 repr.header_len() + payload_buf.len(),
                 hop_limit,
             );
+            ip_repr.set_traffic_class(traffic_class);
 
             emit(cx, packet_meta.meta, (ip_repr, repr, payload_buf))
         });
@@ -737,6 +790,13 @@ mod test {
     fn test_set_hop_limit_zero() {
         let mut s = socket(buffer(0), buffer(1));
         s.set_hop_limit(Some(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "a DSCP must fit six bits")]
+    fn test_set_dscp_too_large() {
+        let mut s = socket(buffer(0), buffer(1));
+        s.set_dscp(64);
     }
 
     #[test]
@@ -997,6 +1057,46 @@ mod test {
                         hop_limit: 0x2a,
                         #[cfg(not(feature = "proto-ipv4"))]
                         traffic_class: 0,
+                    })
+                );
+                Ok::<_, ()>(())
+            }),
+            Ok(())
+        );
+    }
+
+    #[rstest]
+    #[case::ip(Medium::Ip)]
+    #[cfg(feature = "medium-ip")]
+    #[case::ethernet(Medium::Ethernet)]
+    #[cfg(feature = "medium-ethernet")]
+    #[case::ieee802154(Medium::Ieee802154)]
+    #[cfg(feature = "medium-ieee802154")]
+    fn test_set_dscp_ecn(#[case] medium: Medium) {
+        let (mut iface, _, _) = setup(medium);
+        let cx = iface.context();
+
+        let mut s = socket(buffer(0), buffer(1));
+
+        assert_eq!(s.bind(LOCAL_END), Ok(()));
+
+        // EF (DSCP 46) with ECT(0).
+        s.set_dscp(46);
+        s.set_ecn_capable(true);
+        assert_eq!((s.dscp(), s.ecn_capable()), (46, true));
+        assert_eq!(s.send_slice(b"abcdef", REMOTE_END), Ok(()));
+        assert_eq!(
+            s.dispatch(cx, |_, _, (ip_repr, _, _)| {
+                assert_eq!(
+                    ip_repr,
+                    IpReprIpvX(IpvXRepr {
+                        src_addr: LOCAL_ADDR,
+                        dst_addr: REMOTE_ADDR,
+                        next_header: IpProtocol::Udp,
+                        payload_len: 8 + 6,
+                        hop_limit: 64,
+                        #[cfg(not(feature = "proto-ipv4"))]
+                        traffic_class: 0xba,
                     })
                 );
                 Ok::<_, ()>(())

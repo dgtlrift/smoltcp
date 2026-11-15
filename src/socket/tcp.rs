@@ -477,6 +477,8 @@ pub struct Socket<'a> {
     keep_alive: Option<Duration>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     hop_limit: Option<u8>,
+    /// The DSCP of outgoing IPv6 packets.
+    dscp: u8,
     /// Address passed to listen(). Listen address is set when listen() is called and
     /// used every time the socket is reset back to the LISTEN state.
     listen_endpoint: IpListenEndpoint,
@@ -582,6 +584,7 @@ impl<'a> Socket<'a> {
             timeout: None,
             keep_alive: None,
             hop_limit: None,
+            dscp: 0,
             listen_endpoint: IpListenEndpoint::default(),
             tuple: None,
             local_seq_no: TcpSeqNumber::default(),
@@ -859,6 +862,28 @@ impl<'a> Socket<'a> {
         }
 
         self.hop_limit = hop_limit
+    }
+
+    /// Return the DSCP this socket's outgoing IPv6 packets carry in their Traffic Class.
+    ///
+    /// See also the [set_dscp](#method.set_dscp) method.
+    pub fn dscp(&self) -> u8 {
+        self.dscp
+    }
+
+    /// Set the DSCP this socket's outgoing IPv6 packets carry in the upper six bits of their
+    /// Traffic Class (RFC 2474 section 3). A socket without one set uses 0, default forwarding.
+    /// IPv4 packets are sent with a DSCP of 0.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if `dscp` is above 63, which doesn't fit the six-bit field.
+    pub fn set_dscp(&mut self, dscp: u8) {
+        if dscp > 0x3f {
+            panic!("a DSCP must fit six bits")
+        }
+
+        self.dscp = dscp
     }
 
     /// Return the listen endpoint
@@ -2455,6 +2480,7 @@ impl<'a> Socket<'a> {
             0,
             self.hop_limit.unwrap_or(64),
         );
+        ip_repr.set_traffic_class(self.dscp << 2);
 
         // Construct the basic TCP representation, an empty ACK packet.
         // We'll adjust this to be more specific as needed.
@@ -8018,6 +8044,34 @@ mod test {
     fn test_set_hop_limit_zero() {
         let mut s = socket_syn_received();
         s.set_hop_limit(Some(0));
+    }
+
+    #[test]
+    fn test_set_dscp() {
+        let mut s = socket_syn_received();
+
+        // EF; TCP sends no ECT until ECN is negotiated.
+        s.set_dscp(46);
+        assert_eq!(
+            s.socket.dispatch(&mut s.cx, |_, (ip_repr, _)| {
+                #[cfg(not(feature = "proto-ipv4"))]
+                assert_eq!(ip_repr.traffic_class(), 46 << 2);
+                #[cfg(feature = "proto-ipv4")]
+                assert_eq!(ip_repr.traffic_class(), 0);
+                Ok::<_, ()>(())
+            }),
+            Ok(())
+        );
+
+        s.reset();
+        assert_eq!(s.dscp(), 46);
+    }
+
+    #[test]
+    #[should_panic(expected = "a DSCP must fit six bits")]
+    fn test_set_dscp_too_large() {
+        let mut s = socket_syn_received();
+        s.set_dscp(64);
     }
 
     // =========================================================================================//
