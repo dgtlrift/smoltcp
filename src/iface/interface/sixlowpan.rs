@@ -297,7 +297,7 @@ impl InterfaceInner {
         packet: Packet,
         ieee_repr: Ieee802154Repr,
         frag: &mut Fragmenter,
-    ) {
+    ) -> core::result::Result<(), DispatchError> {
         let packet = match packet {
             #[cfg(feature = "proto-ipv4")]
             Packet::Ipv4(_) => unreachable!(),
@@ -315,6 +315,13 @@ impl InterfaceInner {
         if total_size + ieee_len > 125 {
             #[cfg(feature = "proto-sixlowpan-fragmentation")]
             {
+                // The fragmenter holds one packet at a time: overwriting one whose fragments
+                // aren't all sent would lose them.
+                if !frag.is_empty() && !frag.finished() {
+                    net_debug!("dispatch_ieee802154: fragmenter busy, retry later");
+                    return Err(DispatchError::FragmenterBusy);
+                }
+
                 // The packet does not fit in one Ieee802154 frame, so we need fragmentation.
                 // We do this by emitting everything in the `frag.buffer` from the interface.
                 // After emitting everything into that buffer, we send the first fragment heere.
@@ -331,7 +338,7 @@ impl InterfaceInner {
                         fragmentation buffer is too small, at least {} needed",
                         total_size
                     );
-                    return;
+                    return Ok(());
                 }
 
                 let payload_length = packet.header.payload_len;
@@ -403,7 +410,7 @@ impl InterfaceInner {
                 net_debug!(
                     "Enable the `proto-sixlowpan-fragmentation` feature for fragmentation support."
                 );
-                return;
+                return Ok(());
             }
         } else {
             tx_token.set_meta(meta);
@@ -417,6 +424,7 @@ impl InterfaceInner {
                 Self::ipv6_to_sixlowpan(&self.checksum_caps(), packet, &ieee_repr, tx_buf);
             });
         }
+        Ok(())
     }
 
     fn ipv6_to_sixlowpan(
@@ -1036,5 +1044,55 @@ mod raw_tests {
         let ipv6 = Ipv6Packet::new_checked(&out[..len]).unwrap();
         assert_eq!(Ipv6Repr::parse(&ipv6), Ok(header));
         assert_eq!(ipv6.payload(), &raw);
+    }
+
+    #[test]
+    #[cfg(all(feature = "proto-sixlowpan-fragmentation", feature = "socket-udp"))]
+    fn test_sixlowpan_fragmenter_busy() {
+        use crate::phy::Device as _;
+
+        let (mut iface, _, mut device) = crate::tests::setup(Medium::Ieee802154);
+        let body = [0x5a; 200];
+        let packet = || {
+            Packet::new_ipv6(
+                Ipv6Repr {
+                    src_addr: Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 1),
+                    dst_addr: Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 3),
+                    next_header: IpProtocol::Udp,
+                    payload_len: 8 + body.len(),
+                    hop_limit: 64,
+                },
+                IpPayload::Udp(
+                    UdpRepr {
+                        src_port: 1,
+                        dst_port: 2,
+                    },
+                    &body,
+                ),
+            )
+        };
+        let dst = Ieee802154Address::Extended([0x42; 8]);
+        let dispatch = |iface: &mut Interface, device: &mut crate::tests::TestingDevice| {
+            let tx = device.transmit(Instant::ZERO).unwrap();
+            iface.inner.dispatch_ieee802154(
+                dst,
+                tx,
+                PacketMeta::default(),
+                packet(),
+                &mut iface.fragmenter,
+            )
+        };
+
+        // The first packet's first fragment goes; a second packet must wait for the rest.
+        assert_eq!(dispatch(&mut iface, &mut device), Ok(()));
+        assert!(!iface.fragmenter.finished());
+        assert_eq!(
+            dispatch(&mut iface, &mut device),
+            Err(DispatchError::FragmenterBusy)
+        );
+        while !iface.fragmenter.finished() {
+            iface.sixlowpan_egress(&mut device);
+        }
+        assert_eq!(dispatch(&mut iface, &mut device), Ok(()));
     }
 }
