@@ -425,7 +425,9 @@ impl InterfaceInner {
         ieee_repr: &Ieee802154Repr,
         mut buffer: &mut [u8],
     ) {
-        let last_header = packet.payload.as_sixlowpan_next_header();
+        let last_header = packet
+            .payload
+            .as_sixlowpan_next_header(packet.header.next_header);
         let next_header = last_header;
 
         #[cfg(feature = "proto-ipv6-hbh")]
@@ -543,7 +545,9 @@ impl InterfaceInner {
                 );
             }
             #[cfg(feature = "socket-raw")]
-            IpPayload::Raw(_raw) => todo!(),
+            IpPayload::Raw(raw) => {
+                buffer[..raw.len()].copy_from_slice(raw);
+            }
 
             #[allow(unreachable_patterns)]
             _ => unreachable!(),
@@ -560,7 +564,9 @@ impl InterfaceInner {
         packet: &PacketV6,
         ieee_repr: &Ieee802154Repr,
     ) -> (usize, usize, usize) {
-        let last_header = packet.payload.as_sixlowpan_next_header();
+        let last_header = packet
+            .payload
+            .as_sixlowpan_next_header(packet.header.next_header);
         let next_header = last_header;
 
         #[cfg(feature = "proto-ipv6-hbh")]
@@ -972,5 +978,63 @@ mod tests {
         ];
 
         assert_eq!(&buffer[..total_size], &result);
+    }
+}
+
+#[cfg(test)]
+mod raw_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "socket-raw")]
+    fn test_sixlowpan_raw_payload_round_trip() {
+        // A raw payload goes as it is, its next header carried inline.
+        let ieee_repr = Ieee802154Repr {
+            frame_type: Ieee802154FrameType::Data,
+            security_enabled: false,
+            frame_pending: false,
+            ack_request: true,
+            sequence_number: Some(1),
+            pan_id_compression: true,
+            frame_version: Ieee802154FrameVersion::Ieee802154_2006,
+            dst_pan_id: Some(Ieee802154Pan(0xbeef)),
+            dst_addr: Some(Ieee802154Address::Extended([0x02; 8])),
+            src_pan_id: None,
+            src_addr: Some(Ieee802154Address::Extended([0x42; 8])),
+        };
+        let raw = [0x80, 0x00, 0x12, 0x34, 0x00, 0x01, 0x00, 0x02, b'h', b'i'];
+        let header = Ipv6Repr {
+            src_addr: Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 2),
+            dst_addr: Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 3),
+            next_header: IpProtocol::Icmpv6,
+            payload_len: raw.len(),
+            hop_limit: 64,
+        };
+        let packet = PacketV6 {
+            header,
+            #[cfg(feature = "proto-ipv6-hbh")]
+            hop_by_hop: None,
+            #[cfg(feature = "proto-ipv6-fragmentation")]
+            fragment: None,
+            #[cfg(feature = "proto-ipv6-routing")]
+            routing: None,
+            payload: IpPayload::Raw(&raw),
+        };
+
+        let (total_size, _, _) = InterfaceInner::compressed_packet_size(&packet, &ieee_repr);
+        let mut buffer = vec![0u8; total_size];
+        InterfaceInner::ipv6_to_sixlowpan(
+            &ChecksumCapabilities::default(),
+            packet,
+            &ieee_repr,
+            &mut buffer[..],
+        );
+
+        let mut out = [0u8; 128];
+        let len = InterfaceInner::sixlowpan_to_ipv6(&[], &ieee_repr, &buffer[..], None, &mut out)
+            .unwrap();
+        let ipv6 = Ipv6Packet::new_checked(&out[..len]).unwrap();
+        assert_eq!(Ipv6Repr::parse(&ipv6), Ok(header));
+        assert_eq!(ipv6.payload(), &raw);
     }
 }
