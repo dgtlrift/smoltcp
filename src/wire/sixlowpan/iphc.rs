@@ -1036,4 +1036,24 @@ mod test {
             assert_eq!(Repr::parse(&packet, None, None, &[]), Ok(repr));
         }
     }
+
+    #[test]
+    fn ecn_and_dscp_fields() {
+        let bytes = [
+            0x72, 0x33, // IPHC, TF 10: ECN and DSCP inline
+            0xae, // ECN 0b10 (ECT(0)), DSCP 46 (EF)
+            0x3a, // Next header
+        ];
+
+        let packet = Packet::new_unchecked(bytes);
+
+        assert_eq!(packet.tf_field(), 0b10);
+        assert_eq!(packet.ecn_field(), Some(0b10));
+        assert_eq!(packet.dscp_field(), Some(46));
+        assert_eq!(packet.flow_label_field(), None);
+        assert_eq!(
+            packet.next_header(),
+            NextHeader::Uncompressed(IpProtocol::Icmpv6)
+        );
+    }
 }
