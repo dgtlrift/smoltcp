@@ -980,6 +980,8 @@ fn test_raw_socket_no_reply_tcp(#[case] medium: Medium) {
         sack_permitted: false,
         sack_ranges: [None, None, None],
         timestamp: None,
+        ece: false,
+        cwr: false,
         payload: &PAYLOAD,
     };
     let ipv4_repr = Ipv4Repr {

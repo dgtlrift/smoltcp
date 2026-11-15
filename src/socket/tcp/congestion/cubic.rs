@@ -50,6 +50,11 @@ impl Controller for Cubic {
         self.recovery_start = Some(now);
     }
 
+    fn on_ecn(&mut self, now: Instant) {
+        // RFC 3168 section 6.1.2: react as to a loss.
+        self.on_duplicate_ack(now);
+    }
+
     fn set_remote_window(&mut self, remote_window: usize) {
         if self.rwnd < remote_window {
             self.rwnd = remote_window;

@@ -280,35 +280,26 @@ impl InterfaceInner {
         let dst_addr = IpAddress::Ipv6(ipv6_repr.dst_addr);
         if self.route(&dst_addr, self.now).is_none() {
             net_trace!("Not forwarding IPv6 packet; no route to {}", dst_addr);
-            return None;
+            // RFC 4443 section 3.1, code 0.
+            return self.forwarding_error(ipv6_repr, payload, |header, data| {
+                Icmpv6Repr::DstUnreachable {
+                    reason: Icmpv6DstUnreachable::NoRoute,
+                    header,
+                    data,
+                }
+            });
         }
 
         if ipv6_repr.hop_limit <= 1 {
             net_trace!("Not forwarding IPv6 packet; hop limit exceeded");
-            // No ICMPv6 error about an ICMPv6 error (RFC 4443 section 2.4 (e)).
-            if ipv6_repr.next_header == IpProtocol::Icmpv6
-                && payload.first().is_none_or(|&t| t < 128)
-            {
-                return None;
-            }
-            let payload_len =
-                icmp_reply_payload_len(payload.len(), IPV6_MIN_MTU, ipv6_repr.buffer_len());
-            let icmp_repr = Icmpv6Repr::TimeExceeded {
-                reason: Icmpv6TimeExceeded::HopLimitExceeded,
-                header: ipv6_repr,
-                data: &payload[..payload_len],
-            };
-            return Some(Packet::new_ipv6(
-                Ipv6Repr {
-                    src_addr: self.get_source_address_ipv6(&ipv6_repr.src_addr),
-                    dst_addr: ipv6_repr.src_addr,
-                    next_header: IpProtocol::Icmpv6,
-                    payload_len: icmp_repr.buffer_len(),
-                    hop_limit: 64,
-                    traffic_class: 0,
-                },
-                IpPayload::Icmpv6(icmp_repr),
-            ));
+            // RFC 4443 section 3.3.
+            return self.forwarding_error(ipv6_repr, payload, |header, data| {
+                Icmpv6Repr::TimeExceeded {
+                    reason: Icmpv6TimeExceeded::HopLimitExceeded,
+                    header,
+                    data,
+                }
+            });
         }
 
         let header = Ipv6Repr {
@@ -335,6 +326,37 @@ impl InterfaceInner {
         }
 
         Some(Packet::new_ipv6(header, IpPayload::Raw(payload)))
+    }
+
+    /// An ICMPv6 error about a packet this interface couldn't forward, from its own address,
+    /// unless the packet is itself an ICMPv6 error (RFC 4443 section 2.4 (e)) or the rate
+    /// limit is reached.
+    fn forwarding_error<'frame>(
+        &self,
+        ipv6_repr: Ipv6Repr,
+        payload: &'frame [u8],
+        error: impl FnOnce(Ipv6Repr, &'frame [u8]) -> Icmpv6Repr<'frame>,
+    ) -> Option<Packet<'frame>> {
+        if ipv6_repr.next_header == IpProtocol::Icmpv6 && payload.first().is_none_or(|&t| t < 128) {
+            return None;
+        }
+        if !self.icmpv6_error_allowed() {
+            return None;
+        }
+        let payload_len =
+            icmp_reply_payload_len(payload.len(), IPV6_MIN_MTU, ipv6_repr.buffer_len());
+        let icmp_repr = error(ipv6_repr, &payload[..payload_len]);
+        Some(Packet::new_ipv6(
+            Ipv6Repr {
+                src_addr: self.get_source_address_ipv6(&ipv6_repr.src_addr),
+                dst_addr: ipv6_repr.src_addr,
+                next_header: IpProtocol::Icmpv6,
+                payload_len: icmp_repr.buffer_len(),
+                hop_limit: 64,
+                traffic_class: 0,
+            },
+            IpPayload::Icmpv6(icmp_repr),
+        ))
     }
 
     fn process_hopbyhop<'frame>(
@@ -613,11 +635,32 @@ impl InterfaceInner {
         }
     }
 
+    /// Whether an ICMPv6 error message may be sent now (RFC 4443 section 2.4 (f)).
+    fn icmpv6_error_allowed(&self) -> bool {
+        let mut bucket = self.icmpv6_errors.get();
+        let allowed = bucket.take(self.now);
+        self.icmpv6_errors.set(bucket);
+        if !allowed {
+            net_debug!("ICMPv6 error rate limit reached; not sending one");
+        }
+        allowed
+    }
+
     pub(super) fn icmpv6_reply<'frame, 'icmp: 'frame>(
         &self,
         ipv6_repr: Ipv6Repr,
         icmp_repr: Icmpv6Repr<'icmp>,
     ) -> Option<Packet<'frame>> {
+        let is_error = matches!(
+            icmp_repr,
+            Icmpv6Repr::DstUnreachable { .. }
+                | Icmpv6Repr::PktTooBig { .. }
+                | Icmpv6Repr::TimeExceeded { .. }
+                | Icmpv6Repr::ParamProblem { .. }
+        );
+        if is_error && !self.icmpv6_error_allowed() {
+            return None;
+        }
         let src_addr = ipv6_repr.dst_addr;
         let dst_addr = ipv6_repr.src_addr;
 

@@ -24,6 +24,9 @@ pub(super) trait Controller {
 
     fn on_duplicate_ack(&mut self, now: Instant) {}
 
+    /// An ACK echoed a CE mark (RFC 3168 section 6.1.2): reduce the window as for a loss.
+    fn on_ecn(&mut self, now: Instant) {}
+
     fn pre_transmit(&mut self, now: Instant) {}
 
     fn post_transmit(&mut self, now: Instant, len: usize) {}

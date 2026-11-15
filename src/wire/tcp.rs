@@ -831,6 +831,10 @@ pub struct Repr<'a> {
     pub sack_permitted: bool,
     pub sack_ranges: [Option<(u32, u32)>; 3],
     pub timestamp: Option<TcpTimestampRepr>,
+    /// The ECN-Echo flag (RFC 3168 section 6.1).
+    pub ece: bool,
+    /// The Congestion Window Reduced flag (RFC 3168 section 6.1).
+    pub cwr: bool,
     pub payload: &'a [u8],
 }
 
@@ -953,6 +957,8 @@ impl<'a> Repr<'a> {
             sack_permitted: sack_permitted,
             sack_ranges: sack_ranges,
             timestamp: timestamp,
+            ece: packet.ece(),
+            cwr: packet.cwr(),
             payload: packet.payload(),
         })
     }
@@ -1019,6 +1025,8 @@ impl<'a> Repr<'a> {
             Control::Rst => packet.set_rst(true),
         }
         packet.set_ack(self.ack_number.is_some());
+        packet.set_ece(self.ece);
+        packet.set_cwr(self.cwr);
         {
             let mut options = packet.options_mut();
             if let Some(value) = self.max_seg_size {
@@ -1303,6 +1311,8 @@ mod test {
             sack_permitted: false,
             sack_ranges: [None, None, None],
             timestamp: None,
+            ece: false,
+            cwr: false,
             payload: &PAYLOAD_BYTES,
         }
     }

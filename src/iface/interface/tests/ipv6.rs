@@ -1979,10 +1979,13 @@ fn forwarding(#[case] medium: Medium) {
     );
     assert_eq!(process(&mut iface, &data), Some(format!("{forwarded:?}")));
 
-    // No route: dropped.
+    // No route: dropped, and a Destination Unreachable goes back.
     let echo_routed = forwarding_echo(src, routed);
     let data_routed = forwarding_packet(src, routed, 64, IpProtocol::Icmpv6, &echo_routed);
-    assert_eq!(process(&mut iface, &data_routed), None);
+    assert!(
+        process(&mut iface, &data_routed)
+            .is_some_and(|p| p.contains("DstUnreachable") && p.contains("NoRoute"))
+    );
 
     // With a route: forwarded.
     iface.routes_mut().update(|routes| {
@@ -2103,4 +2106,48 @@ fn forwarding_udp(#[case] medium: Medium) {
                 })
             ))
     );
+}
+
+#[rstest]
+#[case::ip(Medium::Ip)]
+#[cfg(feature = "medium-ip")]
+#[case::ethernet(Medium::Ethernet)]
+#[cfg(feature = "medium-ethernet")]
+#[case::ieee802154(Medium::Ieee802154)]
+#[cfg(feature = "medium-ieee802154")]
+fn icmpv6_error_rate_limit(#[case] medium: Medium) {
+    let src = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 2);
+    let dst = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 3);
+    let echo = forwarding_echo(src, dst);
+    // Each arrives at hop limit 1, so each would get a Time Exceeded.
+    let data = forwarding_packet(src, dst, 1, IpProtocol::Icmpv6, &echo);
+
+    let (mut iface, mut sockets, _device) = setup(medium);
+    iface.set_ipv6_forwarding(true);
+    let mut errors = |iface: &mut Interface, at: i64| {
+        iface.inner.now = Instant::from_millis(at);
+        (0..12)
+            .filter(|_| {
+                iface
+                    .inner
+                    .process_ipv6(
+                        &mut sockets,
+                        PacketMeta::default(),
+                        HardwareAddress::default(),
+                        &Ipv6Packet::new_checked(&data[..]).unwrap(),
+                    )
+                    .is_some()
+            })
+            .count()
+    };
+    // A burst of 10, then one each 100 ms.
+    assert_eq!(errors(&mut iface, 0), 10);
+    assert_eq!(errors(&mut iface, 50), 0);
+    assert_eq!(errors(&mut iface, 100), 1);
+    assert_eq!(errors(&mut iface, 350), 2);
+    assert_eq!(errors(&mut iface, 10_000), 10);
+
+    // A limit of none.
+    iface.set_icmpv6_error_limit(0, Duration::from_millis(100));
+    assert_eq!(errors(&mut iface, 20_000), 0);
 }

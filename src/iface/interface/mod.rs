@@ -148,6 +148,9 @@ pub struct InterfaceInner {
     any_ip: bool,
     #[cfg(feature = "proto-ipv6")]
     ipv6_forwarding: bool,
+    /// The ICMPv6 error messages the interface may still send (RFC 4443 section 2.4 (f)).
+    #[cfg(feature = "proto-ipv6")]
+    icmpv6_errors: core::cell::Cell<ErrorBucket>,
     #[cfg(feature = "proto-ipv6-slaac")]
     slaac_enabled: bool,
     #[cfg(feature = "proto-ipv6-slaac")]
@@ -267,6 +270,8 @@ impl Interface {
                 any_ip: false,
                 #[cfg(feature = "proto-ipv6")]
                 ipv6_forwarding: false,
+                #[cfg(feature = "proto-ipv6")]
+                icmpv6_errors: core::cell::Cell::new(ErrorBucket::new(now)),
                 routes: Routes::new(),
                 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
                 neighbor_cache: NeighborCache::new(),
@@ -439,12 +444,26 @@ impl Interface {
     /// again on this interface if a route or an on-link prefix reaches its destination, with
     /// its hop limit one lower and its Traffic Class kept (RFC 8200 section 3). A packet that
     /// arrives with a hop limit of 1 or less is dropped instead, and an ICMPv6 Time Exceeded
-    /// goes back to its source (RFC 4443 section 3.3). Packets with a link-local source or
+    /// goes back to its source (RFC 4443 section 3.3); one with no route gets a Destination
+    /// Unreachable (section 3.1), within the limit that
+    /// [`set_icmpv6_error_limit`](Self::set_icmpv6_error_limit) sets. Packets with a link-local source or
     /// destination are never forwarded. A fragmented 6LoWPAN packet is reassembled first, and
     /// fragmented again for the next hop.
     #[cfg(feature = "proto-ipv6")]
     pub fn set_ipv6_forwarding(&mut self, enabled: bool) {
         self.inner.ipv6_forwarding = enabled;
+    }
+
+    /// Limit the ICMPv6 error messages the interface sends (RFC 4443 section 2.4 (f)): at most
+    /// `burst` at once, and then one each `interval`; the rest are dropped. The default is 10,
+    /// and one each 100 ms. A `burst` of 0 sends none.
+    #[cfg(feature = "proto-ipv6")]
+    pub fn set_icmpv6_error_limit(&mut self, burst: u32, interval: Duration) {
+        let mut bucket = self.inner.icmpv6_errors.get();
+        bucket.burst = burst;
+        bucket.interval = interval;
+        bucket.tokens = bucket.tokens.min(burst);
+        self.inner.icmpv6_errors.set(bucket);
     }
 
     /// Get whether IPv6 forwarding is enabled.
@@ -839,6 +858,53 @@ impl Interface {
             }
         }
         result
+    }
+}
+
+/// A token bucket for ICMP error messages: `burst` tokens, refilled one each `interval`.
+#[cfg(feature = "proto-ipv6")]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub(crate) struct ErrorBucket {
+    burst: u32,
+    interval: Duration,
+    tokens: u32,
+    refilled: Instant,
+}
+
+#[cfg(feature = "proto-ipv6")]
+impl ErrorBucket {
+    fn new(now: Instant) -> Self {
+        Self {
+            burst: 10,
+            interval: Duration::from_millis(100),
+            tokens: 10,
+            refilled: now,
+        }
+    }
+
+    /// Take a token at `now`, if there is one.
+    fn take(&mut self, now: Instant) -> bool {
+        if self.interval > Duration::ZERO && now > self.refilled {
+            let earned = (now - self.refilled).total_micros() / self.interval.total_micros();
+            if self
+                .tokens
+                .saturating_add(u32::try_from(earned).unwrap_or(u32::MAX))
+                >= self.burst
+            {
+                self.tokens = self.burst;
+                self.refilled = now;
+            } else {
+                // `earned` fits, since the sum stayed below `burst`.
+                self.tokens += earned as u32;
+                self.refilled += self.interval * earned as u32;
+            }
+        }
+        if self.tokens == 0 {
+            return false;
+        }
+        self.tokens -= 1;
+        true
     }
 }
 

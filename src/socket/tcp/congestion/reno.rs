@@ -47,6 +47,12 @@ impl Controller for Reno {
         self.ssthresh = (self.cwnd >> 1).max(self.min_cwnd);
     }
 
+    fn on_ecn(&mut self, _now: Instant) {
+        // RFC 3168 section 6.1.2: halve the window and the slow start threshold.
+        self.ssthresh = (self.cwnd >> 1).max(self.min_cwnd);
+        self.cwnd = self.ssthresh;
+    }
+
     fn on_retransmit(&mut self, _now: Instant) {
         self.cwnd = (self.cwnd >> 1).max(self.min_cwnd);
     }

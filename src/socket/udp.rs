@@ -24,6 +24,11 @@ pub struct UdpMetadata {
     /// heuristic (for IPv4).
     pub local_address: Option<IpAddress>,
     pub meta: PacketMeta,
+    /// The ECN field an incoming IPv6 datagram arrived with (RFC 3168 section 5): 0 for
+    /// Not-ECT, 1 or 2 for ECT, 3 for CE. 0 on an IPv4 datagram, and ignored on outgoing
+    /// datagrams, which carry the socket's own (see
+    /// [`set_ecn_capable`](Socket::set_ecn_capable)).
+    pub ecn: u8,
 }
 
 impl<T: Into<IpEndpoint>> From<T> for UdpMetadata {
@@ -32,6 +37,7 @@ impl<T: Into<IpEndpoint>> From<T> for UdpMetadata {
             endpoint: value.into(),
             local_address: None,
             meta: PacketMeta::default(),
+            ecn: 0,
         }
     }
 }
@@ -127,6 +133,8 @@ pub struct Socket<'a> {
     dscp: u8,
     /// Whether outgoing IPv6 packets are ECN-capable (ECT(0)).
     ecn_capable: bool,
+    /// Datagrams received marked CE.
+    ce_received: u32,
     #[cfg(feature = "async")]
     rx_waker: WakerRegistration,
     #[cfg(feature = "async")]
@@ -143,6 +151,7 @@ impl<'a> Socket<'a> {
             hop_limit: None,
             dscp: 0,
             ecn_capable: false,
+            ce_received: 0,
             #[cfg(feature = "async")]
             rx_waker: WakerRegistration::new(),
             #[cfg(feature = "async")]
@@ -255,6 +264,13 @@ impl<'a> Socket<'a> {
     /// An application that sets this should react to the CE marks its peer sees.
     pub fn set_ecn_capable(&mut self, ecn_capable: bool) {
         self.ecn_capable = ecn_capable
+    }
+
+    /// Return how many datagrams this socket received marked CE (Congestion Experienced),
+    /// each of which also reports it in its [`UdpMetadata::ecn`]. The socket doesn't react to
+    /// them: telling the sender is the application protocol's job.
+    pub fn ce_received(&self) -> u32 {
+        self.ce_received
     }
 
     /// The Traffic Class of this socket's outgoing IPv6 packets.
@@ -567,10 +583,15 @@ impl<'a> Socket<'a> {
             size
         );
 
+        let ecn = ip_repr.traffic_class() & 0b11;
+        if ecn == 0b11 {
+            self.ce_received = self.ce_received.wrapping_add(1);
+        }
         let metadata = UdpMetadata {
             endpoint: remote_endpoint,
             local_address: Some(ip_repr.dst_addr()),
             meta,
+            ecn,
         };
 
         match self.rx_buffer.enqueue(size, metadata) {
@@ -890,6 +911,32 @@ mod test {
             Ok(())
         );
         assert!(socket.can_send());
+    }
+
+    #[test]
+    #[cfg(all(feature = "medium-ip", not(feature = "proto-ipv4")))]
+    fn test_recv_ecn() {
+        let (mut iface, _, _) = setup(Medium::Ip);
+        let cx = iface.context();
+        let mut socket = socket(buffer(3), buffer(0));
+        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+
+        // Not-ECT, ECT(0) and CE: each datagram reports its own, and CE is counted.
+        for traffic_class in [0, (46 << 2) | 0b10, (46 << 2) | 0b11] {
+            let mut ip_repr = REMOTE_IP_REPR;
+            ip_repr.set_traffic_class(traffic_class);
+            assert!(socket.accepts(cx, &ip_repr, &REMOTE_UDP_REPR));
+            socket.process(
+                cx,
+                PacketMeta::default(),
+                &ip_repr,
+                &REMOTE_UDP_REPR,
+                PAYLOAD,
+            );
+        }
+        let ecn: Vec<u8> = (0..3).map(|_| socket.recv().unwrap().1.ecn).collect();
+        assert_eq!(ecn, [0, 0b10, 0b11]);
+        assert_eq!(socket.ce_received(), 1);
     }
 
     #[rstest]

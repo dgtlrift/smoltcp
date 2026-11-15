@@ -37,6 +37,8 @@ mod wire {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            ece: false,
+            cwr: false,
             payload: &PAYLOAD_BYTES,
             timestamp: None,
         };
