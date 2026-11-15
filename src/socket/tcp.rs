@@ -558,6 +558,8 @@ pub struct Socket<'a> {
     congestion_controller: congestion::AnyController,
     /// Explicit Congestion Notification.
     ecn: Ecn,
+    /// The cap on the segment size, sent and advertised, if one is set.
+    max_seg_size: Option<u16>,
 
     /// tsval generator - if some, tcp timestamp is enabled
     tsval_generator: Option<TcpTimestampGenerator>,
@@ -633,6 +635,7 @@ impl<'a> Socket<'a> {
             last_remote_tsval: 0,
             congestion_controller: congestion::AnyController::new(),
             ecn: Ecn::default(),
+            max_seg_size: None,
 
             #[cfg(feature = "async")]
             rx_waker: WakerRegistration::new(),
@@ -971,6 +974,43 @@ impl<'a> Socket<'a> {
                 self.congestion_controller,
                 congestion::AnyController::None(_)
             )
+    }
+
+    /// Cap the TCP segment size: the MSS this socket advertises in its SYN or SYN-ACK, and
+    /// the largest segment it sends, below the peer's MSS. `None`, the default, leaves the
+    /// size to the interface's IP MTU.
+    ///
+    /// A cap lets each segment fit one link-layer frame where the IP MTU is larger than a
+    /// frame, as over 6LoWPAN, so that no segment is fragmented. It applies from the next
+    /// `listen` or `connect`.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if a size of 0 is given.
+    pub fn set_max_segment_size(&mut self, max_seg_size: Option<u16>) {
+        if let Some(0) = max_seg_size {
+            panic!("a maximum segment size must not be zero")
+        }
+        self.max_seg_size = max_seg_size;
+    }
+
+    /// Return the cap on the segment size, if one is set. See
+    /// [`set_max_segment_size`](Self::set_max_segment_size).
+    pub fn max_segment_size(&self) -> Option<u16> {
+        self.max_seg_size
+    }
+
+    /// The largest segment this end may receive or send, by its own MTU and cap.
+    fn local_mss(&self, cx: &Context, ip_header_len: usize) -> usize {
+        let mtu_mss = cx.ip_mtu() - ip_header_len - TCP_HEADER_LEN;
+        self.max_seg_size
+            .map_or(mtu_mss, |cap| mtu_mss.min(cap as usize))
+    }
+
+    /// The segment size the congestion controller works with, once the peer's is known.
+    fn sender_mss(&self, remote_mss: usize) -> usize {
+        self.max_seg_size
+            .map_or(remote_mss, |cap| remote_mss.min(cap as usize))
     }
 
     /// Return the connection state, in terms of the TCP state machine.
@@ -1980,9 +2020,8 @@ impl<'a> Socket<'a> {
                         tcp_trace!("received SYNACK with zero MSS, ignoring");
                         return None;
                     }
-                    self.congestion_controller
-                        .inner_mut()
-                        .set_mss(max_seg_size as usize);
+                    let mss = self.sender_mss(max_seg_size as usize);
+                    self.congestion_controller.inner_mut().set_mss(mss);
                     self.remote_mss = max_seg_size as usize
                 }
 
@@ -2037,9 +2076,8 @@ impl<'a> Socket<'a> {
                         return None;
                     }
                     self.remote_mss = max_seg_size as usize;
-                    self.congestion_controller
-                        .inner_mut()
-                        .set_mss(self.remote_mss);
+                    let mss = self.sender_mss(self.remote_mss);
+                    self.congestion_controller.inner_mut().set_mss(mss);
                 }
 
                 self.remote_seq_no = repr.seq_number + 1;
@@ -2373,7 +2411,7 @@ impl<'a> Socket<'a> {
         };
 
         // Max segment size we're able to send due to MTU limitations.
-        let local_mss = cx.ip_mtu() - ip_header_len - TCP_HEADER_LEN;
+        let local_mss = self.local_mss(cx, ip_header_len);
 
         // The effective max segment size, taking into account our and remote's limits.
         let effective_mss = local_mss.min(self.remote_mss);
@@ -2692,7 +2730,7 @@ impl<'a> Socket<'a> {
                 // 3. MSS we can send, determined by our MTU.
                 let size = win_limit
                     .min(self.remote_mss)
-                    .min(cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN);
+                    .min(self.local_mss(cx, ip_repr.header_len()));
 
                 let offset = self.remote_last_seq - self.local_seq_no;
                 repr.payload = self.tx_buffer.get_allocated(offset, size);
@@ -2769,7 +2807,7 @@ impl<'a> Socket<'a> {
 
         if repr.control == TcpControl::Syn {
             // Fill the MSS option. See RFC 6691 for an explanation of this calculation.
-            let max_segment_size = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
+            let max_segment_size = self.local_mss(cx, ip_repr.header_len());
             repr.max_seg_size = Some(max_segment_size as u16);
         }
 
@@ -8222,6 +8260,82 @@ mod test {
     fn test_set_dscp_too_large() {
         let mut s = socket_syn_received();
         s.set_dscp(64);
+    }
+
+    // =========================================================================================//
+    // Tests for the segment size cap.
+    // =========================================================================================//
+
+    #[test]
+    fn test_max_segment_size_advertised() {
+        let mut s = socket_syn_sent();
+        s.set_max_segment_size(Some(40));
+        assert_eq!(s.max_segment_size(), Some(40));
+        recv!(
+            s,
+            [TcpRepr {
+                control: TcpControl::Syn,
+                seq_number: LOCAL_SEQ,
+                ack_number: None,
+                max_seg_size: Some(40),
+                window_scale: Some(0),
+                sack_permitted: true,
+                ..RECV_TEMPL
+            }]
+        );
+    }
+
+    #[test]
+    fn test_max_segment_size_sent() {
+        let mut s = socket_established();
+        s.set_max_segment_size(Some(4));
+        s.set_nagle_enabled(false);
+        s.send_slice(b"abcdef").unwrap();
+        recv!(
+            s,
+            [
+                TcpRepr {
+                    seq_number: LOCAL_SEQ + 1,
+                    ack_number: Some(REMOTE_SEQ + 1),
+                    payload: &b"abcd"[..],
+                    ..RECV_TEMPL
+                },
+                TcpRepr {
+                    seq_number: LOCAL_SEQ + 1 + 4,
+                    ack_number: Some(REMOTE_SEQ + 1),
+                    payload: &b"ef"[..],
+                    ..RECV_TEMPL
+                }
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "socket-tcp-reno")]
+    fn test_max_segment_size_sets_initial_window() {
+        // The peer allows 1000 octets, the cap 40: the window starts at 4 segments of 40.
+        let mut s = socket_syn_sent();
+        s.set_max_segment_size(Some(40));
+        let _ = ecn_recv(&mut s, 0);
+        send!(
+            s,
+            TcpRepr {
+                control: TcpControl::Syn,
+                seq_number: REMOTE_SEQ,
+                ack_number: Some(LOCAL_SEQ + 1),
+                max_seg_size: Some(1000),
+                window_scale: Some(0),
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.congestion_controller.inner().window(), 160);
+    }
+
+    #[test]
+    #[should_panic(expected = "a maximum segment size must not be zero")]
+    fn test_max_segment_size_zero() {
+        let mut s = socket();
+        s.set_max_segment_size(Some(0));
     }
 
     // =========================================================================================//
