@@ -2402,6 +2402,20 @@ impl<'a> Socket<'a> {
         }
     }
 
+    /// What the congestion window leaves for new data: the window less the data in flight,
+    /// sent and not yet acknowledged.
+    fn congestion_window_left(&self) -> usize {
+        let in_flight = if self.remote_last_seq >= self.local_seq_no {
+            self.remote_last_seq - self.local_seq_no
+        } else {
+            0
+        };
+        self.congestion_controller
+            .inner()
+            .window()
+            .saturating_sub(in_flight)
+    }
+
     fn seq_to_transmit(&self, cx: &mut Context) -> bool {
         let ip_header_len = match self.tuple.unwrap().local.addr {
             #[cfg(feature = "proto-ipv4")]
@@ -2435,8 +2449,9 @@ impl<'a> Socket<'a> {
             0
         };
 
-        // Compare max_send with the congestion window.
-        let max_send = max_send.min(self.congestion_controller.inner().window());
+        // The congestion window bounds the data in flight (RFC 5681 section 3.1): what's left
+        // of it once the unacknowledged data is counted.
+        let max_send = max_send.min(self.congestion_window_left());
 
         // Can we send at least 1 octet?
         let mut can_send = max_send != 0;
@@ -2730,7 +2745,11 @@ impl<'a> Socket<'a> {
                 // 3. MSS we can send, determined by our MTU.
                 let size = win_limit
                     .min(self.remote_mss)
-                    .min(self.local_mss(cx, ip_repr.header_len()));
+                    .min(self.local_mss(cx, ip_repr.header_len()))
+                    .min(
+                        self.congestion_window_left()
+                            .max(usize::from(is_zero_window_probe)),
+                    );
 
                 let offset = self.remote_last_seq - self.local_seq_no;
                 repr.payload = self.tx_buffer.get_allocated(offset, size);
@@ -8548,6 +8567,48 @@ mod test {
             },
         );
         assert_eq!(ecn_recv(&mut s, 2100), (46 << 2, false, false, 0));
+    }
+
+    #[test]
+    #[cfg(feature = "socket-tcp-reno")]
+    fn test_congestion_window_bounds_data_in_flight() {
+        let mut s = socket_established_with_buffer_sizes(512, 64);
+        s.set_nagle_enabled(false);
+        s.remote_mss = 16;
+        s.remote_win_len = 512;
+        // Reno, whose window stays put without ACKs; RFC 5681's initial window for 16-octet
+        // segments is 4 of them.
+        s.set_congestion_control(CongestionControl::Reno);
+        s.congestion_controller.inner_mut().set_mss(16);
+        assert_eq!(s.congestion_controller.inner().window(), 64);
+        s.send_slice(&[0x55; 512]).unwrap();
+
+        let flight = |s: &mut TestSocket, t: i64| {
+            let mut sent = 0;
+            for t in t..t + 16 {
+                s.cx.set_now(Instant::from_millis(t));
+                let _ = s.socket.dispatch(&mut s.cx, |_, (_, repr)| {
+                    sent += repr.payload.len();
+                    Ok::<_, ()>(())
+                });
+            }
+            sent
+        };
+        // No more than the window goes out unacknowledged.
+        assert_eq!(flight(&mut s, 0), 64);
+        // An ACK of one segment frees room for more.
+        send!(
+            s,
+            time 20,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 + 16),
+                window_len: 512,
+                ..SEND_TEMPL
+            }
+        );
+        let more = flight(&mut s, 30);
+        assert!(more > 0 && more <= 32, "{more}");
     }
 
     // =========================================================================================//
