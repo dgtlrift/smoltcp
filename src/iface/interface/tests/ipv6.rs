@@ -1890,3 +1890,217 @@ fn test_solicited_node_multicast_autojoin(#[case] medium: Medium) {
     assert!(!iface.has_multicast_group(addr1.solicited_node()));
     assert!(!iface.has_multicast_group(addr2.solicited_node()));
 }
+
+/// An IPv6 packet from `src` to `dst` with `payload`, emitted for the forwarding tests.
+fn forwarding_packet(
+    src: Ipv6Address,
+    dst: Ipv6Address,
+    hop_limit: u8,
+    next_header: IpProtocol,
+    payload: &[u8],
+) -> Vec<u8> {
+    let repr = Ipv6Repr {
+        src_addr: src,
+        dst_addr: dst,
+        next_header,
+        payload_len: payload.len(),
+        hop_limit,
+        // EF (DSCP 46) with ECT(0), which forwarding keeps.
+        traffic_class: 0xba,
+    };
+    let mut bytes = vec![0; repr.buffer_len() + payload.len()];
+    repr.emit(&mut Ipv6Packet::new_unchecked(&mut bytes[..]));
+    bytes[repr.buffer_len()..].copy_from_slice(payload);
+    bytes
+}
+
+/// An ICMPv6 echo request from `src` to `dst`, as octets.
+fn forwarding_echo(src: Ipv6Address, dst: Ipv6Address) -> Vec<u8> {
+    let echo = Icmpv6Repr::EchoRequest {
+        ident: 1,
+        seq_no: 2,
+        data: b"forward",
+    };
+    let mut bytes = vec![0; echo.buffer_len()];
+    echo.emit(
+        &src,
+        &dst,
+        &mut Icmpv6Packet::new_unchecked(&mut bytes[..]),
+        &ChecksumCapabilities::default(),
+    );
+    bytes
+}
+
+#[rstest]
+#[case::ip(Medium::Ip)]
+#[cfg(feature = "medium-ip")]
+#[case::ethernet(Medium::Ethernet)]
+#[cfg(feature = "medium-ethernet")]
+#[case::ieee802154(Medium::Ieee802154)]
+#[cfg(feature = "medium-ieee802154")]
+fn forwarding(#[case] medium: Medium) {
+    let src = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 2);
+    // On-link, in the interface's fdbe::/64.
+    let on_link = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 3);
+    // Reached only through a route.
+    let routed = Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 5);
+    let echo = forwarding_echo(src, on_link);
+    let data = forwarding_packet(src, on_link, 64, IpProtocol::Icmpv6, &echo);
+
+    let (mut iface, mut sockets, _device) = setup(medium);
+    let mut process = |iface: &mut Interface, data: &[u8]| {
+        iface
+            .inner
+            .process_ipv6(
+                &mut sockets,
+                PacketMeta::default(),
+                HardwareAddress::default(),
+                &Ipv6Packet::new_checked(data).unwrap(),
+            )
+            .map(|p| format!("{p:?}"))
+    };
+
+    // Off by default: dropped.
+    assert!(!iface.ipv6_forwarding());
+    assert_eq!(process(&mut iface, &data), None);
+
+    // On: an on-link destination is reached, the hop limit one lower and the Traffic Class kept.
+    iface.set_ipv6_forwarding(true);
+    let forwarded = Packet::new_ipv6(
+        Ipv6Repr {
+            src_addr: src,
+            dst_addr: on_link,
+            next_header: IpProtocol::Icmpv6,
+            payload_len: echo.len(),
+            hop_limit: 63,
+            traffic_class: 0xba,
+        },
+        IpPayload::Raw(&echo),
+    );
+    assert_eq!(process(&mut iface, &data), Some(format!("{forwarded:?}")));
+
+    // No route: dropped.
+    let echo_routed = forwarding_echo(src, routed);
+    let data_routed = forwarding_packet(src, routed, 64, IpProtocol::Icmpv6, &echo_routed);
+    assert_eq!(process(&mut iface, &data_routed), None);
+
+    // With a route: forwarded.
+    iface.routes_mut().update(|routes| {
+        routes
+            .push(crate::iface::Route {
+                cidr: IpCidr::Ipv6(Ipv6Cidr::new(routed, 128)),
+                via_router: IpAddress::Ipv6(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 9)),
+                preferred_until: None,
+                expires_at: None,
+            })
+            .unwrap();
+    });
+    assert!(process(&mut iface, &data_routed).is_some_and(|p| p.contains("hop_limit: 63")));
+
+    // A link-local source or destination: never forwarded.
+    let link_local = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 7);
+    let echo_ll = forwarding_echo(link_local, on_link);
+    let data_ll = forwarding_packet(link_local, on_link, 64, IpProtocol::Icmpv6, &echo_ll);
+    assert_eq!(process(&mut iface, &data_ll), None);
+
+    // Hop limit 1: dropped, and a Time Exceeded goes back from this interface's address.
+    let data_last = forwarding_packet(src, on_link, 1, IpProtocol::Icmpv6, &echo);
+    let header = Ipv6Repr::parse(&Ipv6Packet::new_checked(&data_last[..]).unwrap()).unwrap();
+    let icmp_repr = Icmpv6Repr::TimeExceeded {
+        reason: Icmpv6TimeExceeded::HopLimitExceeded,
+        header,
+        data: &echo,
+    };
+    let exceeded = Packet::new_ipv6(
+        Ipv6Repr {
+            src_addr: Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 1),
+            dst_addr: src,
+            next_header: IpProtocol::Icmpv6,
+            payload_len: icmp_repr.buffer_len(),
+            hop_limit: 64,
+            traffic_class: 0,
+        },
+        IpPayload::Icmpv6(icmp_repr),
+    );
+    assert_eq!(
+        process(&mut iface, &data_last),
+        Some(format!("{exceeded:?}"))
+    );
+
+    // Hop limit 1 on an ICMPv6 error: dropped without another error.
+    let mut error = echo.clone();
+    error[0] = 1;
+    let data_error = forwarding_packet(src, on_link, 1, IpProtocol::Icmpv6, &error);
+    assert_eq!(process(&mut iface, &data_error), None);
+}
+
+#[rstest]
+#[case::ip(Medium::Ip)]
+#[cfg(all(feature = "medium-ip", feature = "socket-udp"))]
+#[case::ieee802154(Medium::Ieee802154)]
+#[cfg(all(feature = "medium-ieee802154", feature = "socket-udp"))]
+fn forwarding_udp(#[case] medium: Medium) {
+    let src = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 2);
+    let dst = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 3);
+    let udp_repr = UdpRepr {
+        src_port: 7000,
+        dst_port: 7001,
+    };
+    let body = b"forwarded datagram";
+    let mut udp = vec![0; udp_repr.header_len() + body.len()];
+    udp_repr.emit(
+        &mut UdpPacket::new_unchecked(&mut udp[..]),
+        &src.into(),
+        &dst.into(),
+        body.len(),
+        |buf| buf.copy_from_slice(body),
+        &ChecksumCapabilities::default(),
+    );
+    let data = forwarding_packet(src, dst, 64, IpProtocol::Udp, &udp);
+
+    let (mut iface, mut sockets, _device) = setup(medium);
+    iface.set_ipv6_forwarding(true);
+    // A UDP datagram is forwarded parsed, so that 6LoWPAN can compress its header again.
+    let forwarded = Packet::new_ipv6(
+        Ipv6Repr {
+            src_addr: src,
+            dst_addr: dst,
+            next_header: IpProtocol::Udp,
+            payload_len: udp.len(),
+            hop_limit: 63,
+            traffic_class: 0xba,
+        },
+        IpPayload::Udp(udp_repr, body),
+    );
+    assert_eq!(
+        iface.inner.process_ipv6(
+            &mut sockets,
+            PacketMeta::default(),
+            HardwareAddress::default(),
+            &Ipv6Packet::new_checked(&data[..]).unwrap(),
+        ),
+        Some(forwarded)
+    );
+
+    // A bad checksum: forwarded as it is.
+    let mut bad = data.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 0xff;
+    assert!(
+        iface
+            .inner
+            .process_ipv6(
+                &mut sockets,
+                PacketMeta::default(),
+                HardwareAddress::default(),
+                &Ipv6Packet::new_checked(&bad[..]).unwrap(),
+            )
+            .is_some_and(|p| matches!(
+                p,
+                Packet::Ipv6(PacketV6 {
+                    payload: IpPayload::Raw(_),
+                    ..
+                })
+            ))
+    );
+}

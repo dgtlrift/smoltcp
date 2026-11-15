@@ -214,6 +214,10 @@ impl InterfaceInner {
             && !self.has_multicast_group(ipv6_repr.dst_addr)
             && !ipv6_repr.dst_addr.is_loopback()
         {
+            if self.ipv6_forwarding && ipv6_repr.dst_addr.x_is_unicast() {
+                return self.forward_ipv6(ipv6_repr, ipv6_packet.payload());
+            }
+
             if !ipv6_repr.dst_addr.x_is_unicast() {
                 net_trace!(
                     "Rejecting IPv6 packet; {} is not a unicast address",
@@ -258,6 +262,79 @@ impl InterfaceInner {
             handled_by_raw_socket,
             ip_payload,
         )
+    }
+
+    /// Forward a packet for another node, as
+    /// [`Interface::set_ipv6_forwarding`](super::Interface::set_ipv6_forwarding) describes.
+    /// `payload` is the IPv6 payload, extension headers included.
+    fn forward_ipv6<'frame>(
+        &self,
+        ipv6_repr: Ipv6Repr,
+        payload: &'frame [u8],
+    ) -> Option<Packet<'frame>> {
+        if ipv6_repr.src_addr.is_link_local() || ipv6_repr.dst_addr.is_link_local() {
+            net_trace!("Not forwarding IPv6 packet; link-local address");
+            return None;
+        }
+
+        let dst_addr = IpAddress::Ipv6(ipv6_repr.dst_addr);
+        if self.route(&dst_addr, self.now).is_none() {
+            net_trace!("Not forwarding IPv6 packet; no route to {}", dst_addr);
+            return None;
+        }
+
+        if ipv6_repr.hop_limit <= 1 {
+            net_trace!("Not forwarding IPv6 packet; hop limit exceeded");
+            // No ICMPv6 error about an ICMPv6 error (RFC 4443 section 2.4 (e)).
+            if ipv6_repr.next_header == IpProtocol::Icmpv6
+                && payload.first().is_none_or(|&t| t < 128)
+            {
+                return None;
+            }
+            let payload_len =
+                icmp_reply_payload_len(payload.len(), IPV6_MIN_MTU, ipv6_repr.buffer_len());
+            let icmp_repr = Icmpv6Repr::TimeExceeded {
+                reason: Icmpv6TimeExceeded::HopLimitExceeded,
+                header: ipv6_repr,
+                data: &payload[..payload_len],
+            };
+            return Some(Packet::new_ipv6(
+                Ipv6Repr {
+                    src_addr: self.get_source_address_ipv6(&ipv6_repr.src_addr),
+                    dst_addr: ipv6_repr.src_addr,
+                    next_header: IpProtocol::Icmpv6,
+                    payload_len: icmp_repr.buffer_len(),
+                    hop_limit: 64,
+                    traffic_class: 0,
+                },
+                IpPayload::Icmpv6(icmp_repr),
+            ));
+        }
+
+        let header = Ipv6Repr {
+            hop_limit: ipv6_repr.hop_limit - 1,
+            ..ipv6_repr
+        };
+
+        // A UDP datagram is parsed, so that 6LoWPAN compresses its header for the next hop as
+        // the previous hop did. One whose checksum fails is forwarded as it is.
+        #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
+        if ipv6_repr.next_header == IpProtocol::Udp
+            && let Ok(udp_packet) = UdpPacket::new_checked(payload)
+            && let Ok(udp_repr) = UdpRepr::parse(
+                &udp_packet,
+                &ipv6_repr.src_addr.into(),
+                &ipv6_repr.dst_addr.into(),
+                &self.caps.checksum,
+            )
+        {
+            return Some(Packet::new_ipv6(
+                header,
+                IpPayload::Udp(udp_repr, udp_packet.payload()),
+            ));
+        }
+
+        Some(Packet::new_ipv6(header, IpPayload::Raw(payload)))
     }
 
     fn process_hopbyhop<'frame>(

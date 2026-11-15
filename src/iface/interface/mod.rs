@@ -146,6 +146,8 @@ pub struct InterfaceInner {
     tag: u16,
     ip_addrs: Vec<IpCidr, IFACE_MAX_ADDR_COUNT>,
     any_ip: bool,
+    #[cfg(feature = "proto-ipv6")]
+    ipv6_forwarding: bool,
     #[cfg(feature = "proto-ipv6-slaac")]
     slaac_enabled: bool,
     #[cfg(feature = "proto-ipv6-slaac")]
@@ -263,6 +265,8 @@ impl Interface {
                 hardware_addr: config.hardware_addr,
                 ip_addrs: Vec::new(),
                 any_ip: false,
+                #[cfg(feature = "proto-ipv6")]
+                ipv6_forwarding: false,
                 routes: Routes::new(),
                 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
                 neighbor_cache: NeighborCache::new(),
@@ -427,6 +431,28 @@ impl Interface {
     /// See [`set_any_ip`](Self::set_any_ip) for details on AnyIP
     pub fn any_ip(&self) -> bool {
         self.inner.any_ip
+    }
+
+    /// Enable or disable IPv6 forwarding, off by default.
+    ///
+    /// When enabled, a unicast IPv6 packet for an address this interface doesn't have goes out
+    /// again on this interface if a route or an on-link prefix reaches its destination, with
+    /// its hop limit one lower and its Traffic Class kept (RFC 8200 section 3). A packet that
+    /// arrives with a hop limit of 1 or less is dropped instead, and an ICMPv6 Time Exceeded
+    /// goes back to its source (RFC 4443 section 3.3). Packets with a link-local source or
+    /// destination are never forwarded. A fragmented 6LoWPAN packet is reassembled first, and
+    /// fragmented again for the next hop.
+    #[cfg(feature = "proto-ipv6")]
+    pub fn set_ipv6_forwarding(&mut self, enabled: bool) {
+        self.inner.ipv6_forwarding = enabled;
+    }
+
+    /// Get whether IPv6 forwarding is enabled.
+    ///
+    /// See [`set_ipv6_forwarding`](Self::set_ipv6_forwarding).
+    #[cfg(feature = "proto-ipv6")]
+    pub fn ipv6_forwarding(&self) -> bool {
+        self.inner.ipv6_forwarding
     }
 
     /// Get the packet reassembly timeout.

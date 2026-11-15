@@ -129,7 +129,7 @@ impl<'p> Packet<'p> {
                 );
             }
 
-            #[cfg(feature = "socket-raw")]
+            #[cfg(any(feature = "socket-raw", feature = "proto-ipv6"))]
             IpPayload::Raw(raw_packet) => {
                 let len = raw_packet.len();
                 payload[..len].copy_from_slice(raw_packet)
@@ -216,7 +216,8 @@ pub(crate) enum IpPayload<'p> {
     Icmpv6(Icmpv6Repr<'p>),
     #[cfg(feature = "proto-ipv6")]
     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
-    #[cfg(feature = "socket-raw")]
+    /// An IP payload carried as it is: a raw socket's, or a forwarded packet's.
+    #[cfg(any(feature = "socket-raw", feature = "proto-ipv6"))]
     Raw(&'p [u8]),
     #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
     Udp(UdpRepr, &'p [u8]),
@@ -228,7 +229,9 @@ pub(crate) enum IpPayload<'p> {
 
 impl<'p> IpPayload<'p> {
     #[cfg(feature = "proto-sixlowpan")]
-    pub(crate) fn as_sixlowpan_next_header(&self) -> SixlowpanNextHeader {
+    /// The 6LoWPAN next header for this payload; `next_header` is the IP next header, which
+    /// a raw payload carries uncompressed.
+    pub(crate) fn as_sixlowpan_next_header(&self, next_header: IpProtocol) -> SixlowpanNextHeader {
         match self {
             #[cfg(feature = "proto-ipv4")]
             Self::Icmpv4(_) => unreachable!(),
@@ -244,8 +247,8 @@ impl<'p> IpPayload<'p> {
             Self::Tcp(_) => SixlowpanNextHeader::Uncompressed(IpProtocol::Tcp),
             #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
             Self::Udp(..) => SixlowpanNextHeader::Compressed,
-            #[cfg(feature = "socket-raw")]
-            Self::Raw(_) => todo!(),
+            #[cfg(feature = "proto-ipv6")]
+            Self::Raw(_) => SixlowpanNextHeader::Uncompressed(next_header),
         }
     }
 }
