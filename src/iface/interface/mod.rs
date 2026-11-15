@@ -678,6 +678,19 @@ impl Interface {
         device: &mut (impl Device + ?Sized),
         sockets: &mut SocketSet<'_>,
     ) -> PollIngressSingleResult {
+        // A packet received now could need its reply or its forwarding fragmented, which must
+        // wait until the fragmenter has sent the packet it holds.
+        #[cfg(all(
+            feature = "medium-ieee802154",
+            feature = "proto-sixlowpan-fragmentation"
+        ))]
+        if matches!(self.inner.caps.medium, Medium::Ieee802154)
+            && !self.fragmenter.is_empty()
+            && !self.fragmenter.finished()
+        {
+            return PollIngressSingleResult::None;
+        }
+
         let Some((rx_token, tx_token)) = device.receive(self.inner.now) else {
             return PollIngressSingleResult::None;
         };
@@ -1303,8 +1316,7 @@ impl InterfaceInner {
                 self.lookup_hardware_addr(tx_token, &ip_repr.dst_addr(), frag)?;
             let addr = addr.ieee802154_or_panic();
 
-            self.dispatch_ieee802154(addr, tx_token, meta, packet, frag);
-            return Ok(());
+            return self.dispatch_ieee802154(addr, tx_token, meta, packet, frag);
         }
 
         // Dispatch IP/Ethernet:
@@ -1500,4 +1512,8 @@ enum DispatchError {
     /// the neighbor for it yet. Discovery has been initiated, dispatch
     /// should be retried later.
     NeighborPending,
+    /// The packet needs 6LoWPAN fragmentation, and the fragmenter is still sending another
+    /// packet's fragments. Dispatch should be retried once it has.
+    #[cfg(feature = "proto-sixlowpan-fragmentation")]
+    FragmenterBusy,
 }
