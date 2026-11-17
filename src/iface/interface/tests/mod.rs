@@ -299,3 +299,30 @@ pub fn tcp_listen_drops_unspecified_src() {
     assert_eq!(reply, None);
     assert!(sockets.get_mut::<tcp::Socket>(handle).is_listening());
 }
+
+/// A UDP datagram's packet ID reaches the device over IPv6, as it does over IPv4.
+#[test]
+#[cfg(all(
+    feature = "medium-ip",
+    feature = "socket-udp",
+    feature = "proto-ipv6",
+    feature = "packetmeta-id"
+))]
+fn udp_packet_id_reaches_the_device_over_ipv6() {
+    use crate::socket::udp;
+
+    let (mut iface, mut sockets, mut device) = setup(Medium::Ip);
+    let mut socket = udp::Socket::new(
+        udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY], vec![0; 64]),
+        udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY], vec![0; 64]),
+    );
+    socket.bind(4243).unwrap();
+    let mut meta = udp::UdpMetadata::from((Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2), 4242));
+    meta.meta.id = 7;
+    socket.send_slice(b"id", meta).unwrap();
+    sockets.add(socket);
+
+    iface.poll(Instant::from_millis(0), &mut device, &mut sockets);
+    assert_eq!(device.tx_queue.len(), 1);
+    assert_eq!(device.tx_metas, [meta.meta]);
+}
