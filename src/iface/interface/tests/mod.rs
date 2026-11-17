@@ -390,6 +390,8 @@ fn tcp_segment_lost_locally_is_sent_again() {
         sack_permitted: false,
         sack_ranges: [None, None, None],
         timestamp: None,
+        ece: false,
+        cwr: false,
         payload: &[],
     };
     let ip = Ipv6Repr {
@@ -398,6 +400,7 @@ fn tcp_segment_lost_locally_is_sent_again() {
         next_header: IpProtocol::Tcp,
         payload_len: reply.buffer_len(),
         hop_limit: 64,
+        traffic_class: 0,
     };
     let mut bytes = vec![0u8; ip.buffer_len() + reply.buffer_len()];
     ip.emit(&mut Ipv6Packet::new_unchecked(&mut bytes[..]));

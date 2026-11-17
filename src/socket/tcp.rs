@@ -1050,7 +1050,6 @@ impl<'a> Socket<'a> {
         self.remote_last_ts = None;
         self.ack_delay_timer = AckDelayTimer::Idle;
         self.challenge_ack_timer = Instant::from_secs(0);
-<<<<<<< HEAD
         // The setting and the counters outlast the connection.
         self.ecn = Ecn {
             enabled: self.ecn.enabled,
@@ -1058,12 +1057,10 @@ impl<'a> Socket<'a> {
             ece_received: self.ecn.ece_received,
             ..Ecn::default()
         };
-=======
         #[cfg(feature = "local-loss")]
         {
             self.local_loss_recover = None;
         }
->>>>>>> ariel-sim-local-loss
 
         #[cfg(feature = "async")]
         {
@@ -8658,7 +8655,6 @@ mod test {
     }
 
     #[test]
-<<<<<<< HEAD
     fn test_limited_transmit_without_congestion_control() {
         let mut s = socket_established();
         s.set_congestion_control(CongestionControl::None);
@@ -8670,10 +8666,6 @@ mod test {
     #[test]
     #[cfg(feature = "socket-tcp-reno")]
     fn test_limited_transmit() {
-=======
-    #[cfg(all(feature = "local-loss", feature = "socket-tcp-reno"))]
-    fn test_local_loss() {
->>>>>>> ariel-sim-local-loss
         let mut s = socket_established_with_buffer_sizes(512, 64);
         s.set_nagle_enabled(false);
         s.remote_mss = 16;
@@ -8681,7 +8673,6 @@ mod test {
         s.set_congestion_control(CongestionControl::Reno);
         s.congestion_controller.inner_mut().set_mss(16);
         s.send_slice(&[0x55; 512]).unwrap();
-<<<<<<< HEAD
 
         let flight = |s: &mut TestSocket, t: i64| {
             let mut sent = 0;
@@ -8714,7 +8705,18 @@ mod test {
         // The window itself hasn't changed: nothing more goes out.
         assert_eq!(s.congestion_controller.inner().window(), 64);
         assert_eq!(flight(&mut s, 80), 0);
-=======
+    }
+
+    #[test]
+    #[cfg(all(feature = "local-loss", feature = "socket-tcp-reno"))]
+    fn test_local_loss() {
+        let mut s = socket_established_with_buffer_sizes(512, 64);
+        s.set_nagle_enabled(false);
+        s.remote_mss = 16;
+        s.remote_win_len = 512;
+        s.set_congestion_control(CongestionControl::Reno);
+        s.congestion_controller.inner_mut().set_mss(16);
+        s.send_slice(&[0x55; 512]).unwrap();
         let mut sent = Vec::new();
         for t in 0..16 {
             s.cx.set_now(Instant::from_millis(t));
@@ -8738,7 +8740,6 @@ mod test {
         // A report of a segment not in flight is ignored.
         s.on_local_loss(now, sent[3].0 + 16);
         assert_eq!(s.remote_last_seq, sent[2].0);
->>>>>>> ariel-sim-local-loss
     }
 
     // =========================================================================================//
