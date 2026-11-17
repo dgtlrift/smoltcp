@@ -434,3 +434,34 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         ]
     );
 }
+
+/// Each 6LoWPAN fragment of a packet carries the packet's metadata, so that a device reports
+/// the packet lost if any fragment is.
+#[test]
+#[cfg(all(
+    feature = "proto-sixlowpan-fragmentation",
+    feature = "socket-udp",
+    feature = "local-loss"
+))]
+fn every_fragment_carries_its_packets_metadata() {
+    use crate::socket::udp;
+
+    let (mut iface, mut sockets, mut device) = setup(Medium::Ieee802154);
+    let mut socket = udp::Socket::new(
+        udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY], vec![0; 512]),
+        udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY], vec![0; 512]),
+    );
+    socket.bind(6969).unwrap();
+    let mut meta = udp::UdpMetadata::from((Ipv6Address::new(0xff02, 0, 0, 0, 0, 0, 0, 1), 6969));
+    meta.meta.id = 9;
+    meta.meta.transport = Some(IpProtocol::Udp);
+    socket.send_slice(&[0x55; 300], meta).unwrap();
+    sockets.add(socket);
+
+    for t in 0..10 {
+        iface.poll(Instant::from_millis(t), &mut device, &mut sockets);
+    }
+    assert!(device.tx_queue.len() >= 3, "{}", device.tx_queue.len());
+    assert_eq!(device.tx_metas.len(), device.tx_queue.len());
+    assert!(device.tx_metas.iter().all(|m| *m == meta.meta));
+}

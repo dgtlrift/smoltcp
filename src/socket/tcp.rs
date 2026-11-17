@@ -541,6 +541,10 @@ pub struct Socket<'a> {
     /// The number of packets received directly after
     /// each other which have the same ACK number.
     local_rx_dup_acks: u8,
+    /// After a local-loss report reduced the window, the sequence number an ACK must reach
+    /// before another may (RFC 3168 section 6.1.2's rule for CE, applied to local losses).
+    #[cfg(feature = "local-loss")]
+    local_loss_recover: Option<TcpSeqNumber>,
 
     /// Duration for Delayed ACK. If None no ACKs will be delayed.
     ack_delay: Option<Duration>,
@@ -627,6 +631,8 @@ impl<'a> Socket<'a> {
             local_rx_last_ack: None,
             local_rx_last_seq: None,
             local_rx_dup_acks: 0,
+            #[cfg(feature = "local-loss")]
+            local_loss_recover: None,
             ack_delay: Some(ACK_DELAY_DEFAULT),
             ack_delay_timer: AckDelayTimer::Idle,
             challenge_ack_timer: Instant::from_secs(0),
@@ -1044,6 +1050,7 @@ impl<'a> Socket<'a> {
         self.remote_last_ts = None;
         self.ack_delay_timer = AckDelayTimer::Idle;
         self.challenge_ack_timer = Instant::from_secs(0);
+<<<<<<< HEAD
         // The setting and the counters outlast the connection.
         self.ecn = Ecn {
             enabled: self.ecn.enabled,
@@ -1051,6 +1058,12 @@ impl<'a> Socket<'a> {
             ece_received: self.ecn.ece_received,
             ..Ecn::default()
         };
+=======
+        #[cfg(feature = "local-loss")]
+        {
+            self.local_loss_recover = None;
+        }
+>>>>>>> ariel-sim-local-loss
 
         #[cfg(feature = "async")]
         {
@@ -2392,6 +2405,29 @@ impl<'a> Socket<'a> {
             Some(self.ack_reply(ip_repr, repr))
         } else {
             None
+        }
+    }
+
+    /// The device lost the segment that starts at `seq` before it left the link layer: send
+    /// again from it at once, and reduce the window, at most once per window of data.
+    #[cfg(feature = "local-loss")]
+    pub(crate) fn on_local_loss(&mut self, now: Instant, seq: TcpSeqNumber) {
+        // Only a segment still unacknowledged, and not already being sent again, matters.
+        if seq < self.local_seq_no || seq >= self.remote_last_seq {
+            return;
+        }
+        net_debug!("local loss of seq {}: sending again from it", seq);
+        let sent = self.remote_last_seq;
+        self.remote_last_seq = seq;
+        // Karn's algorithm: no RTT sample from a segment sent again.
+        self.rtte.on_retransmit();
+        let reduce = match self.local_loss_recover {
+            Some(recover) => self.local_seq_no >= recover,
+            None => true,
+        };
+        if reduce {
+            self.congestion_controller.inner_mut().on_local_loss(now);
+            self.local_loss_recover = Some(sent);
         }
     }
 
@@ -8622,6 +8658,7 @@ mod test {
     }
 
     #[test]
+<<<<<<< HEAD
     fn test_limited_transmit_without_congestion_control() {
         let mut s = socket_established();
         s.set_congestion_control(CongestionControl::None);
@@ -8633,6 +8670,10 @@ mod test {
     #[test]
     #[cfg(feature = "socket-tcp-reno")]
     fn test_limited_transmit() {
+=======
+    #[cfg(all(feature = "local-loss", feature = "socket-tcp-reno"))]
+    fn test_local_loss() {
+>>>>>>> ariel-sim-local-loss
         let mut s = socket_established_with_buffer_sizes(512, 64);
         s.set_nagle_enabled(false);
         s.remote_mss = 16;
@@ -8640,6 +8681,7 @@ mod test {
         s.set_congestion_control(CongestionControl::Reno);
         s.congestion_controller.inner_mut().set_mss(16);
         s.send_slice(&[0x55; 512]).unwrap();
+<<<<<<< HEAD
 
         let flight = |s: &mut TestSocket, t: i64| {
             let mut sent = 0;
@@ -8672,6 +8714,31 @@ mod test {
         // The window itself hasn't changed: nothing more goes out.
         assert_eq!(s.congestion_controller.inner().window(), 64);
         assert_eq!(flight(&mut s, 80), 0);
+=======
+        let mut sent = Vec::new();
+        for t in 0..16 {
+            s.cx.set_now(Instant::from_millis(t));
+            let _ = s.socket.dispatch(&mut s.cx, |_, (_, repr)| {
+                sent.push((repr.seq_number, repr.payload.len()));
+                Ok::<_, ()>(())
+            });
+        }
+        assert_eq!(sent.len(), 4);
+        let now = Instant::from_millis(20);
+
+        // The second segment is lost: sending starts again from it, and the window halves.
+        s.on_local_loss(now, sent[1].0);
+        assert_eq!(s.remote_last_seq, sent[1].0);
+        assert_eq!(s.congestion_controller.inner().window(), 32);
+        // A report from the same window resends, but doesn't halve it again.
+        s.remote_last_seq = sent[3].0 + 16;
+        s.on_local_loss(now, sent[2].0);
+        assert_eq!(s.remote_last_seq, sent[2].0);
+        assert_eq!(s.congestion_controller.inner().window(), 32);
+        // A report of a segment not in flight is ignored.
+        s.on_local_loss(now, sent[3].0 + 16);
+        assert_eq!(s.remote_last_seq, sent[2].0);
+>>>>>>> ariel-sim-local-loss
     }
 
     // =========================================================================================//

@@ -174,6 +174,11 @@ where
         self.lower.capabilities()
     }
 
+    #[cfg(feature = "local-loss")]
+    fn local_loss(&mut self) -> Option<super::LocalLoss> {
+        self.lower.local_loss()
+    }
+
     fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let sink = &self.sink;
         let mode = self.mode;

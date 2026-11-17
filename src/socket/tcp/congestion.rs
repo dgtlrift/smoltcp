@@ -38,6 +38,11 @@ pub(super) trait Controller {
     /// An ACK echoed a CE mark (RFC 3168 section 6.1.2): reduce the window as for a loss.
     fn on_ecn(&mut self, now: Instant) {}
 
+    /// The device lost a segment before it left the link layer: reduce the window as for a
+    /// loss.
+    #[cfg(feature = "local-loss")]
+    fn on_local_loss(&mut self, now: Instant) {}
+
     fn pre_transmit(&mut self, now: Instant) {}
 
     fn post_transmit(&mut self, now: Instant, len: usize) {}

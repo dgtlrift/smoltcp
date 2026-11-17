@@ -55,6 +55,11 @@ impl<D: Device> Device for Tracer<D> {
         self.inner.capabilities()
     }
 
+    #[cfg(feature = "local-loss")]
+    fn local_loss(&mut self) -> Option<super::LocalLoss> {
+        self.inner.local_loss()
+    }
+
     fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let medium = self.inner.capabilities().medium;
         self.inner.receive(timestamp).map(|(rx_token, tx_token)| {

@@ -58,6 +58,14 @@ impl Controller for Reno {
         self.cwnd = self.ssthresh;
     }
 
+    #[cfg(feature = "local-loss")]
+    fn on_local_loss(&mut self, _now: Instant) {
+        // Halve the window and the slow start threshold (RFC 5681 section 3.2, equation 4),
+        // so the window then grows by congestion avoidance.
+        self.ssthresh = (self.cwnd >> 1).max(self.min_cwnd);
+        self.cwnd = self.ssthresh;
+    }
+
     fn on_retransmit(&mut self, _now: Instant) {
         self.cwnd = (self.cwnd >> 1).max(self.min_cwnd);
     }

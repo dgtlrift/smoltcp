@@ -6,6 +6,8 @@ provides lookup and caching of hardware addresses, and handles management packet
 
 mod fragmentation;
 mod interface;
+#[cfg(all(feature = "local-loss", feature = "socket-tcp"))]
+mod local_loss;
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 mod neighbor;
 mod route;

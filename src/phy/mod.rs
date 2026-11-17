@@ -168,6 +168,44 @@ pub const IPV4_FRAGMENT_PAYLOAD_ALIGNMENT: usize = 8;
 pub struct PacketMeta {
     #[cfg(feature = "packetmeta-id")]
     pub id: u32,
+    /// The transport whose packet `id` names, for local-loss reports ([`Device::local_loss`]):
+    /// a device reports a lost packet only if this is set. The interface sets it on TCP
+    /// segments that carry data.
+    #[cfg(feature = "local-loss")]
+    pub transport: Option<crate::wire::IpProtocol>,
+}
+
+/// Why a device lost a packet before it left the link layer.
+///
+/// The reasons follow the link layer's own reports, such as IEEE 802.15.4's MCPS-DATA.confirm
+/// statuses.
+#[cfg(feature = "local-loss")]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[non_exhaustive]
+pub enum LossReason {
+    /// The link layer had no room for the packet.
+    Refused,
+    /// The link layer queued the packet, then dropped it for one of a higher class.
+    Dropped,
+    /// No acknowledgment came after every retry.
+    NoAck,
+    /// The channel was busy at every attempt.
+    ChannelBusy,
+}
+
+/// A report of a packet lost before it left the link layer, by the transport and ID of its
+/// [`PacketMeta`].
+#[cfg(feature = "local-loss")]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct LocalLoss {
+    /// The packet's transport.
+    pub transport: crate::wire::IpProtocol,
+    /// The packet's ID within its transport.
+    pub id: u32,
+    /// Why it was lost.
+    pub reason: LossReason,
 }
 
 /// A description of checksum behavior for a particular protocol.
@@ -375,6 +413,15 @@ pub trait Device {
 
     /// Get a description of device capabilities.
     fn capabilities(&self) -> DeviceCapabilities;
+
+    /// Get the next report of a packet lost before it left the link layer.
+    ///
+    /// Only packets whose [`PacketMeta::transport`] is set are reported. The default reports
+    /// nothing, for devices that can't tell.
+    #[cfg(feature = "local-loss")]
+    fn local_loss(&mut self) -> Option<LocalLoss> {
+        None
+    }
 }
 
 /// A token to receive a single network packet.

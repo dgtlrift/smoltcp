@@ -336,3 +336,107 @@ fn udp_packet_id_reaches_the_device_over_ipv6() {
     assert_eq!(device.tx_queue.len(), 1);
     assert_eq!(device.tx_metas, [meta.meta]);
 }
+
+/// A TCP segment the device reports lost goes out again at once, from the same sequence
+/// number, without waiting for duplicate ACKs or the retransmission timer.
+#[test]
+#[cfg(all(
+    feature = "medium-ip",
+    feature = "socket-tcp",
+    feature = "proto-ipv6",
+    feature = "local-loss"
+))]
+fn tcp_segment_lost_locally_is_sent_again() {
+    let (mut iface, mut sockets, mut device) = setup(Medium::Ip);
+    let local = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    let remote = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
+    let socket = crate::socket::tcp::Socket::new(
+        crate::socket::tcp::SocketBuffer::new(vec![0; 256]),
+        crate::socket::tcp::SocketBuffer::new(vec![0; 256]),
+    );
+    let handle = sockets.add(socket);
+    sockets
+        .get_mut::<crate::socket::tcp::Socket>(handle)
+        .connect(iface.context(), (remote, 4242), 4243)
+        .unwrap();
+
+    // Each sent packet as its TCP sequence number and payload length.
+    let segments = |device: &mut crate::tests::TestingDevice| -> Vec<(TcpSeqNumber, usize)> {
+        device
+            .tx_queue
+            .drain(..)
+            .map(|p| {
+                let ip = Ipv6Packet::new_checked(&p[..]).unwrap();
+                let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+                (tcp.seq_number(), tcp.payload().len())
+            })
+            .collect()
+    };
+
+    iface.poll(Instant::from_millis(0), &mut device, &mut sockets);
+    let syn = segments(&mut device);
+    assert_eq!(syn.len(), 1);
+
+    // The SYN-ACK.
+    let reply = TcpRepr {
+        src_port: 4242,
+        dst_port: 4243,
+        control: TcpControl::Syn,
+        seq_number: TcpSeqNumber(5000),
+        ack_number: Some(syn[0].0 + 1),
+        window_len: 256,
+        window_scale: None,
+        max_seg_size: Some(1000),
+        sack_permitted: false,
+        sack_ranges: [None, None, None],
+        timestamp: None,
+        payload: &[],
+    };
+    let ip = Ipv6Repr {
+        src_addr: remote,
+        dst_addr: local,
+        next_header: IpProtocol::Tcp,
+        payload_len: reply.buffer_len(),
+        hop_limit: 64,
+    };
+    let mut bytes = vec![0u8; ip.buffer_len() + reply.buffer_len()];
+    ip.emit(&mut Ipv6Packet::new_unchecked(&mut bytes[..]));
+    reply.emit(
+        &mut TcpPacket::new_unchecked(&mut bytes[ip.buffer_len()..]),
+        &remote.into(),
+        &local.into(),
+        &ChecksumCapabilities::default(),
+    );
+    device.rx_queue.push_back(bytes);
+    iface.poll(Instant::from_millis(10), &mut device, &mut sockets);
+    segments(&mut device);
+    device.tx_metas.clear();
+
+    sockets
+        .get_mut::<crate::socket::tcp::Socket>(handle)
+        .send_slice(b"local loss")
+        .unwrap();
+    iface.poll(Instant::from_millis(20), &mut device, &mut sockets);
+    let sent = segments(&mut device);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1, 10);
+    let meta = device.tx_metas[0];
+    assert_eq!(meta.transport, Some(IpProtocol::Tcp));
+
+    device.losses.push_back(crate::phy::LocalLoss {
+        transport: IpProtocol::Tcp,
+        id: meta.id,
+        reason: crate::phy::LossReason::NoAck,
+    });
+    iface.poll(Instant::from_millis(30), &mut device, &mut sockets);
+    assert_eq!(segments(&mut device), sent);
+
+    // A second report of the same segment is ignored: its tag was taken.
+    device.losses.push_back(crate::phy::LocalLoss {
+        transport: IpProtocol::Tcp,
+        id: meta.id,
+        reason: crate::phy::LossReason::NoAck,
+    });
+    iface.poll(Instant::from_millis(40), &mut device, &mut sockets);
+    assert_eq!(segments(&mut device), vec![]);
+}

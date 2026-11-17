@@ -388,6 +388,10 @@ impl InterfaceInner {
                 pkt.sixlowpan.fragn_size = (125 - ieee_len - fragn.buffer_len()) / 8 * 8;
                 pkt.sent_bytes = frag1_size;
                 pkt.sixlowpan.datagram_offset = frag1_size + header_diff;
+                #[cfg(feature = "local-loss")]
+                {
+                    pkt.sixlowpan.meta = meta;
+                }
 
                 tx_token.set_meta(meta);
                 tx_token.consume(ieee_len + frag1.buffer_len() + frag1_size, |mut tx_buf| {
@@ -669,10 +673,14 @@ impl InterfaceInner {
     #[cfg(feature = "proto-sixlowpan-fragmentation")]
     pub(super) fn dispatch_sixlowpan_frag<Tx: TxToken>(
         &mut self,
-        tx_token: Tx,
+        #[cfg_attr(not(feature = "local-loss"), allow(unused_mut))] mut tx_token: Tx,
         ieee_repr: Ieee802154Repr,
         frag: &mut Fragmenter,
     ) {
+        // Each fragment carries the packet's metadata, so that its loss is the packet's.
+        #[cfg(feature = "local-loss")]
+        tx_token.set_meta(frag.sixlowpan.meta);
+
         // Create the FRAG_N header.
         let fragn = SixlowpanFragRepr::Fragment {
             size: frag.sixlowpan.datagram_size,
