@@ -61,6 +61,9 @@ pub struct TestingDevice {
     /// The metadata of each packet sent, in order.
     #[cfg(feature = "packetmeta-id")]
     pub(crate) tx_metas: Vec<phy::PacketMeta>,
+    /// Local-loss reports for the interface to take.
+    #[cfg(feature = "local-loss")]
+    pub(crate) losses: VecDeque<phy::LocalLoss>,
     max_transmission_unit: usize,
     medium: Medium,
 }
@@ -77,6 +80,8 @@ impl TestingDevice {
             rx_queue: VecDeque::new(),
             #[cfg(feature = "packetmeta-id")]
             tx_metas: Vec::new(),
+            #[cfg(feature = "local-loss")]
+            losses: VecDeque::new(),
             max_transmission_unit: match medium {
                 #[cfg(feature = "medium-ethernet")]
                 Medium::Ethernet => 1514,
@@ -124,6 +129,11 @@ impl Device for TestingDevice {
             #[cfg(feature = "packetmeta-id")]
             meta: phy::PacketMeta::default(),
         })
+    }
+
+    #[cfg(feature = "local-loss")]
+    fn local_loss(&mut self) -> Option<phy::LocalLoss> {
+        self.losses.pop_front()
     }
 }
 

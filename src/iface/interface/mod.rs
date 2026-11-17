@@ -116,6 +116,8 @@ pub struct Interface {
     pub(crate) inner: InterfaceInner,
     fragments: FragmentsBuffer,
     fragmenter: Fragmenter,
+    #[cfg(all(feature = "local-loss", feature = "socket-tcp"))]
+    loss_tags: super::local_loss::LossTags,
 }
 
 /// The device independent part of an Ethernet network interface.
@@ -257,6 +259,8 @@ impl Interface {
                 reassembly_timeout: Duration::from_secs(60),
             },
             fragmenter: Fragmenter::new(),
+            #[cfg(all(feature = "local-loss", feature = "socket-tcp"))]
+            loss_tags: super::local_loss::LossTags::new(),
             inner: InterfaceInner {
                 now,
                 caps,
@@ -476,6 +480,11 @@ impl Interface {
         let mut res = PollResult::None;
 
         self.poll_maintenance(timestamp);
+
+        #[cfg(feature = "local-loss")]
+        if self.poll_local_loss(device, sockets) == PollResult::SocketStateChanged {
+            res = PollResult::SocketStateChanged;
+        }
 
         // Process ingress while there's packets available.
         loop {
@@ -710,6 +719,40 @@ impl Interface {
         })
     }
 
+    /// Passes each of the device's local-loss reports to the socket that sent the packet.
+    #[cfg(feature = "local-loss")]
+    fn poll_local_loss(
+        &mut self,
+        device: &mut (impl Device + ?Sized),
+        #[cfg_attr(not(feature = "socket-tcp"), allow(unused_variables))] sockets: &mut SocketSet<
+            '_,
+        >,
+    ) -> PollResult {
+        let mut result = PollResult::None;
+        while let Some(loss) = device.local_loss() {
+            net_debug!(
+                "local loss: {} id {} ({:?})",
+                loss.transport,
+                loss.id,
+                loss.reason
+            );
+            #[cfg(feature = "socket-tcp")]
+            if loss.transport == IpProtocol::Tcp
+                && let Some((handle, seq)) = self.loss_tags.take(loss.id)
+            {
+                for item in sockets.items_mut() {
+                    if item.meta.handle == handle
+                        && let Socket::Tcp(socket) = &mut item.socket
+                    {
+                        socket.on_local_loss(self.inner.now, seq);
+                        result = PollResult::SocketStateChanged;
+                    }
+                }
+            }
+        }
+        result
+    }
+
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),
@@ -731,6 +774,8 @@ impl Interface {
                 continue;
             }
 
+            #[cfg(all(feature = "local-loss", feature = "socket-tcp"))]
+            let handle = item.meta.handle;
             let mut neighbor_addr = None;
             let mut respond = |inner: &mut InterfaceInner, meta: PacketMeta, response: Packet| {
                 neighbor_addr = Some(response.ip_repr().dst_addr());
@@ -784,11 +829,16 @@ impl Interface {
                 }
                 #[cfg(feature = "socket-tcp")]
                 Socket::Tcp(socket) => socket.dispatch(&mut self.inner, |inner, (ip, tcp)| {
-                    respond(
-                        inner,
-                        PacketMeta::default(),
-                        Packet::new(ip, IpPayload::Tcp(tcp)),
-                    )
+                    #[cfg_attr(not(feature = "local-loss"), allow(unused_mut))]
+                    let mut meta = PacketMeta::default();
+                    // A segment that carries data is tagged, so that the device can report
+                    // it lost.
+                    #[cfg(feature = "local-loss")]
+                    if !tcp.payload.is_empty() {
+                        meta.id = self.loss_tags.tag(handle, tcp.seq_number);
+                        meta.transport = Some(IpProtocol::Tcp);
+                    }
+                    respond(inner, meta, Packet::new(ip, IpPayload::Tcp(tcp)))
                 }),
                 #[cfg(feature = "socket-dhcpv4")]
                 Socket::Dhcpv4(socket) => {

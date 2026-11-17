@@ -213,6 +213,11 @@ impl<D: Device> Device for FaultInjector<D> {
         caps
     }
 
+    #[cfg(feature = "local-loss")]
+    fn local_loss(&mut self) -> Option<super::LocalLoss> {
+        self.inner.local_loss()
+    }
+
     fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let (rx_token, tx_token) = self.inner.receive(timestamp)?;
         let rx_meta = <D::RxToken<'_> as phy::RxToken>::meta(&rx_token);

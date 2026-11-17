@@ -35,6 +35,11 @@ pub(super) trait Controller {
 
     fn on_duplicate_ack(&mut self, now: Instant) {}
 
+    /// The device lost a segment before it left the link layer: reduce the window as for a
+    /// loss.
+    #[cfg(feature = "local-loss")]
+    fn on_local_loss(&mut self, now: Instant) {}
+
     fn pre_transmit(&mut self, now: Instant) {}
 
     fn post_transmit(&mut self, now: Instant, len: usize) {}

@@ -44,6 +44,11 @@ impl Controller for Cubic {
         self.recovery_start = Some(now);
     }
 
+    #[cfg(feature = "local-loss")]
+    fn on_local_loss(&mut self, now: Instant) {
+        self.on_duplicate_ack(now);
+    }
+
     fn on_duplicate_ack(&mut self, now: Instant) {
         self.w_max = self.cwnd;
         self.ssthresh = self.cwnd >> 1;

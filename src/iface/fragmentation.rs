@@ -332,6 +332,11 @@ pub(crate) struct SixlowpanFragmenter {
     pub ll_dst_addr: Ieee802154Address,
     /// The link layer IEEE802.15.4 source address.
     pub ll_src_addr: Ieee802154Address,
+
+    /// The packet's metadata, which each fragment carries, so that a device can report the
+    /// packet lost if any fragment is.
+    #[cfg(feature = "local-loss")]
+    pub meta: crate::phy::PacketMeta,
 }
 
 #[cfg(feature = "_proto-fragmentation")]
@@ -365,6 +370,8 @@ impl Fragmenter {
                 fragn_size: 0,
                 ll_dst_addr: Ieee802154Address::Absent,
                 ll_src_addr: Ieee802154Address::Absent,
+                #[cfg(feature = "local-loss")]
+                meta: crate::phy::PacketMeta::default(),
             },
         }
     }
@@ -408,6 +415,10 @@ impl Fragmenter {
             self.sixlowpan.fragn_size = 0;
             self.sixlowpan.ll_dst_addr = Ieee802154Address::Absent;
             self.sixlowpan.ll_src_addr = Ieee802154Address::Absent;
+            #[cfg(feature = "local-loss")]
+            {
+                self.sixlowpan.meta = crate::phy::PacketMeta::default();
+            }
         }
     }
 }

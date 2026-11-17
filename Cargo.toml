@@ -95,6 +95,7 @@ defmt = ["dep:defmt", "heapless/defmt"]
 "socket-tcp-reno" = []
 
 "packetmeta-id" = []
+"local-loss" = ["packetmeta-id"]
 
 "async" = []
 
@@ -194,6 +195,16 @@ iface-max-route-count-128 = []
 iface-max-route-count-256 = []
 iface-max-route-count-512 = []
 iface-max-route-count-1024 = []
+
+iface-local-loss-tag-count-1 = []
+iface-local-loss-tag-count-2 = []
+iface-local-loss-tag-count-4 = []
+iface-local-loss-tag-count-8 = []
+iface-local-loss-tag-count-16 = [] # Default
+iface-local-loss-tag-count-32 = []
+iface-local-loss-tag-count-64 = []
+iface-local-loss-tag-count-128 = []
+iface-local-loss-tag-count-256 = []
 
 iface-max-prefix-count-1 = [] # Default
 iface-max-prefix-count-2 = []
