@@ -58,6 +58,9 @@ pub(crate) fn setup<'a>(medium: Medium) -> (Interface, SocketSet<'a>, TestingDev
 pub struct TestingDevice {
     pub(crate) tx_queue: VecDeque<Vec<u8>>,
     pub(crate) rx_queue: VecDeque<Vec<u8>>,
+    /// The metadata of each packet sent, in order.
+    #[cfg(feature = "packetmeta-id")]
+    pub(crate) tx_metas: Vec<phy::PacketMeta>,
     max_transmission_unit: usize,
     medium: Medium,
 }
@@ -72,6 +75,8 @@ impl TestingDevice {
         TestingDevice {
             tx_queue: VecDeque::new(),
             rx_queue: VecDeque::new(),
+            #[cfg(feature = "packetmeta-id")]
+            tx_metas: Vec::new(),
             max_transmission_unit: match medium {
                 #[cfg(feature = "medium-ethernet")]
                 Medium::Ethernet => 1514,
@@ -102,6 +107,10 @@ impl Device for TestingDevice {
             let rx = RxToken { buffer };
             let tx = TxToken {
                 queue: &mut self.tx_queue,
+                #[cfg(feature = "packetmeta-id")]
+                metas: &mut self.tx_metas,
+                #[cfg(feature = "packetmeta-id")]
+                meta: phy::PacketMeta::default(),
             };
             (rx, tx)
         })
@@ -110,6 +119,10 @@ impl Device for TestingDevice {
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         Some(TxToken {
             queue: &mut self.tx_queue,
+            #[cfg(feature = "packetmeta-id")]
+            metas: &mut self.tx_metas,
+            #[cfg(feature = "packetmeta-id")]
+            meta: phy::PacketMeta::default(),
         })
     }
 }
@@ -132,6 +145,10 @@ impl phy::RxToken for RxToken {
 #[derive(Debug)]
 pub struct TxToken<'a> {
     queue: &'a mut VecDeque<Vec<u8>>,
+    #[cfg(feature = "packetmeta-id")]
+    metas: &'a mut Vec<phy::PacketMeta>,
+    #[cfg(feature = "packetmeta-id")]
+    meta: phy::PacketMeta,
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
@@ -142,6 +159,13 @@ impl<'a> phy::TxToken for TxToken<'a> {
         let mut buffer = vec![0; len];
         let result = f(&mut buffer);
         self.queue.push_back(buffer);
+        #[cfg(feature = "packetmeta-id")]
+        self.metas.push(self.meta);
         result
+    }
+
+    #[cfg(feature = "packetmeta-id")]
+    fn set_meta(&mut self, meta: phy::PacketMeta) {
+        self.meta = meta;
     }
 }
