@@ -248,6 +248,17 @@ impl RttEstimator {
         }
     }
 
+    /// A segment is sent again before the timer expires: its RTT sample, if one is being
+    /// taken, is no longer valid (Karn's algorithm), but the timer doesn't back off, which
+    /// RFC 6298 section 5.5 does only when it expires.
+    #[cfg(feature = "local-loss")]
+    fn abort_sample(&mut self) {
+        if self.timestamp.is_some() {
+            tcp_trace!("rtte: abort sampling due to resend");
+        }
+        self.timestamp = None;
+    }
+
     fn on_retransmit(&mut self) {
         if self.timestamp.is_some() {
             tcp_trace!("rtte: abort sampling due to retransmit");
@@ -2238,8 +2249,8 @@ impl<'a> Socket<'a> {
         net_debug!("local loss of seq {}: sending again from it", seq);
         let sent = self.remote_last_seq;
         self.remote_last_seq = seq;
-        // Karn's algorithm: no RTT sample from a segment sent again.
-        self.rtte.on_retransmit();
+        // Karn's algorithm: no RTT sample from a segment sent again; the timer doesn't back off.
+        self.rtte.abort_sample();
         let reduce = match self.local_loss_recover {
             Some(recover) => self.local_seq_no >= recover,
             None => true,
@@ -8129,10 +8140,13 @@ mod test {
         assert_eq!(sent.len(), 4);
         let now = Instant::from_millis(20);
 
-        // The second segment is lost: sending starts again from it, and the window halves.
+        // The second segment is lost: sending starts again from it, and the window halves,
+        // but the retransmission timer doesn't back off.
+        let rto = s.rtte.retransmission_timeout();
         s.on_local_loss(now, sent[1].0);
         assert_eq!(s.remote_last_seq, sent[1].0);
         assert_eq!(s.congestion_controller.inner().window(), 32);
+        assert_eq!(s.rtte.retransmission_timeout(), rto);
         // A report from the same window resends, but doesn't halve it again.
         s.remote_last_seq = sent[3].0 + 16;
         s.on_local_loss(now, sent[2].0);
