@@ -251,7 +251,6 @@ impl RttEstimator {
     /// A segment is sent again before the timer expires: its RTT sample, if one is being
     /// taken, is no longer valid (Karn's algorithm), but the timer doesn't back off, which
     /// RFC 6298 section 5.5 does only when it expires.
-    #[cfg(feature = "local-loss")]
     fn abort_sample(&mut self) {
         if self.timestamp.is_some() {
             tcp_trace!("rtte: abort sampling due to resend");
@@ -2458,14 +2457,22 @@ impl<'a> Socket<'a> {
             // to be sent again.
             self.remote_last_seq = self.local_seq_no;
 
+            // A fast retransmit isn't the timer expiring: only an expiry backs it off.
+            let expired = !matches!(self.timer, Timer::FastRetransmit);
+
             // Clear the `should_retransmit` state. If we can't retransmit right
             // now for whatever reason (like zero window), this avoids an
             // infinite polling loop where `poll_at` returns `Now` but `dispatch`
             // can't actually do anything.
             self.timer.set_for_idle(cx.now(), self.keep_alive);
 
-            // Inform RTTE, so that it can avoid bogus measurements.
-            self.rtte.on_retransmit();
+            // Inform RTTE, so that it can avoid bogus measurements, and back the timer off
+            // if it expired (RFC 6298 section 5.5).
+            if expired {
+                self.rtte.on_retransmit();
+            } else {
+                self.rtte.abort_sample();
+            }
 
             // Inform the congestion controller that we're retransmitting.
             self.congestion_controller
@@ -6347,6 +6354,35 @@ mod test {
             payload:    &b"ABCDEF"[..],
             ..RECV_TEMPL
         }));
+    }
+
+    #[test]
+    fn test_fast_retransmit_keeps_the_timer() {
+        let mut s = socket_established();
+        s.send_slice(b"xxxxxxyyyyyy").unwrap();
+        recv!(s, time 1000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"xxxxxxyyyyyy"[..],
+            ..RECV_TEMPL
+        }));
+        let rto = s.rtte.retransmission_timeout();
+        // The first ACK sets the ACK the next three duplicate.
+        for t in [1040, 1050, 1055, 1060] {
+            send!(s, time t, TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                ..SEND_TEMPL
+            });
+        }
+        // The fast retransmit resends, without backing the timer off.
+        recv!(s, time 1100, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"xxxxxxyyyyyy"[..],
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.rtte.retransmission_timeout(), rto);
     }
 
     #[test]
