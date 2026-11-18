@@ -8570,6 +8570,8 @@ mod test {
     #[cfg(feature = "socket-tcp-reno")]
     fn test_ecn_sender_reduces_once_per_window() {
         let mut s = socket_established_ecn();
+        // Reno, which halves the window itself, even when CUBIC is built in too.
+        s.set_congestion_control(CongestionControl::Reno);
         s.send_slice(b"abcdef").unwrap();
         let (_, _, cwr, len) = ecn_recv(&mut s, 0);
         assert_eq!((cwr, len), (false, 6));
